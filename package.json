@@ -1,0 +1,52 @@
+{
+  "name": "whatsapp-text-scheduler",
+  "version": "1.0.0",
+  "description": "Locally run WhatsApp message scheduler for macOS",
+  "main": "./out/main/index.js",
+  "author": "Veer",
+  "license": "MIT",
+  "productName": "WA Scheduler",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "preview": "electron-vite preview",
+    "postinstall": "electron-builder install-app-deps",
+    "rebuild": "electron-rebuild -f -w better-sqlite3"
+  },
+  "dependencies": {
+    "better-sqlite3": "^12.8.0",
+    "date-fns": "^4.1.0",
+    "nanoid": "^3.3.11",
+    "node-schedule": "^2.1.1"
+  },
+  "devDependencies": {
+    "@electron/rebuild": "^4.0.3",
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node-schedule": "^2.1.8",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^4.3.0",
+    "autoprefixer": "^10.4.27",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "electron": "^33.0.0",
+    "electron-builder": "^26.8.1",
+    "electron-vite": "^4.0.1",
+    "lucide-react": "^0.460.0",
+    "postcss": "^8.5.8",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "tailwind-merge": "^2.6.0",
+    "tailwindcss": "^3.4.19",
+    "typescript": "^5.7.0",
+    "vite": "^5.4.0"
+  },
+  "build": {
+    "appId": "com.veer.wa-scheduler",
+    "productName": "WA Scheduler",
+    "mac": {
+      "icon": "resources/icon.png",
+      "category": "public.app-category.productivity"
+    }
+  }
+}
