@@ -1,13 +1,16 @@
 import { ipcMain, app } from 'electron'
 import * as db from '../services/db.service'
 import { checkAccessibility, openAccessibilitySettings } from '../services/whatsapp.service'
+import { createLogger } from '../utils/logger'
+
+const log = createLogger('ipc:settings')
 
 export function registerSettingsHandlers(): void {
   ipcMain.handle('settings:getAll', () => {
     try {
       return db.getSettings()
     } catch (err) {
-      console.error('[settings:getAll]', err)
+      log.error('getAll failed', err)
       throw err
     }
   })
@@ -21,7 +24,7 @@ export function registerSettingsHandlers(): void {
         app.setLoginItemSettings({ openAtLogin: value === '1', openAsHidden: true })
       }
     } catch (err) {
-      console.error('[settings:update]', err)
+      log.error('update failed', err)
       throw err
     }
   })

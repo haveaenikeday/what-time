@@ -3,9 +3,35 @@ import { join } from 'path'
 import { initDb, closeDb, getSettings } from './services/db.service'
 import { initScheduler, setOnExecutedCallback, shutdownScheduler, resyncAfterWake } from './services/scheduler.service'
 import { registerAllHandlers } from './ipc/handlers'
+import { createLogger } from './utils/logger'
 import type { RunLog } from '../shared/types'
 
+const log = createLogger('app')
 const isDev = !app.isPackaged
+
+// --- Single instance lock ---
+// Prevents duplicate app instances which would cause DB locking and duplicate sends
+const gotLock = app.requestSingleInstanceLock()
+if (!gotLock) {
+  log.warn('Another instance is already running — quitting')
+  app.quit()
+}
+
+// --- Crash safety ---
+process.on('uncaughtException', (err) => {
+  log.error('Uncaught exception (scheduler continues running)', err)
+})
+process.on('unhandledRejection', (reason) => {
+  log.error('Unhandled promise rejection', reason instanceof Error ? reason : String(reason))
+})
+
+/** Resolve a resource path that works in both dev and packaged builds. */
+function getResourcePath(...segments: string[]): string {
+  const base = isDev
+    ? join(__dirname, '../../resources')
+    : join(process.resourcesPath, 'resources')
+  return join(base, ...segments)
+}
 
 let mainWindow: BrowserWindow | null = null
 let tray: Tray | null = null
@@ -19,7 +45,7 @@ function createWindow(): void {
     minHeight: 600,
     titleBarStyle: 'hiddenInset',
     trafficLightPosition: { x: 15, y: 15 },
-    icon: join(__dirname, '../../resources/icon.png'),
+    icon: getResourcePath('icon.png'),
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       sandbox: false
@@ -37,6 +63,7 @@ function createWindow(): void {
     if (!isQuitting) {
       e.preventDefault()
       mainWindow?.hide()
+      log.info('Window hidden (scheduler still running in background)')
     }
   })
 
@@ -49,7 +76,7 @@ function createWindow(): void {
 }
 
 function createTray(): void {
-  const iconPath = join(__dirname, '../../resources/trayTemplate.png')
+  const iconPath = getResourcePath('trayTemplate.png')
   const icon = nativeImage.createFromPath(iconPath)
   icon.setTemplateImage(true)
 
@@ -93,7 +120,18 @@ function createTray(): void {
   })
 }
 
+// --- Second instance handler: focus existing window ---
+app.on('second-instance', () => {
+  if (mainWindow) {
+    if (mainWindow.isMinimized()) mainWindow.restore()
+    mainWindow.show()
+    mainWindow.focus()
+  }
+})
+
 app.whenReady().then(() => {
+  log.info(`Starting WA Scheduler v${app.getVersion()} (${isDev ? 'dev' : 'packaged'})`)
+
   // Initialize database
   initDb()
 
@@ -105,32 +143,33 @@ app.whenReady().then(() => {
 
   // Create system tray icon
   createTray()
+  log.info('System tray created')
 
   // Sync login item setting from DB
   const settings = getSettings()
   app.setLoginItemSettings({ openAtLogin: settings.openAtLogin, openAsHidden: true })
 
   // Push execution events to renderer + show native notification
-  setOnExecutedCallback((log: RunLog) => {
+  setOnExecutedCallback((execLog: RunLog) => {
     if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.webContents.send('schedule:executed', log)
+      mainWindow.webContents.send('schedule:executed', execLog)
     }
 
     if (Notification.isSupported()) {
-      const title = log.status === 'success' ? 'Message Sent'
-        : log.status === 'dry_run' ? 'Dry Run Complete'
-        : log.status === 'failed' ? 'Send Failed'
+      const title = execLog.status === 'success' ? 'Message Sent'
+        : execLog.status === 'dry_run' ? 'Dry Run Complete'
+        : execLog.status === 'failed' ? 'Send Failed'
         : 'Schedule Skipped'
-      const body = log.status === 'failed'
-        ? (log.errorMessage || 'Unknown error')
-        : (log.contactName || log.phoneNumber || log.scheduleId)
+      const body = execLog.status === 'failed'
+        ? (execLog.errorMessage || 'Unknown error')
+        : (execLog.contactName || execLog.phoneNumber || execLog.scheduleId)
       new Notification({ title, body }).show()
     }
   })
 
   // Re-sync scheduler after macOS sleep/wake to catch missed timers
   powerMonitor.on('resume', () => {
-    console.log('System resumed from sleep — resyncing scheduler')
+    log.info('System resumed from sleep — resyncing scheduler')
     resyncAfterWake()
   })
 
@@ -155,6 +194,8 @@ app.on('window-all-closed', () => {
 
 app.on('before-quit', () => {
   isQuitting = true
+  log.info('Shutting down...')
   shutdownScheduler()
   closeDb()
+  log.info('Shutdown complete')
 })

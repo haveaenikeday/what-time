@@ -2,7 +2,10 @@ import * as schedule from 'node-schedule'
 import { getAllSchedules, getScheduleById, getSettings, insertRunLog, toggleSchedule, updateLastFiredAt } from './db.service'
 import { sendWhatsAppMessage } from './whatsapp.service'
 import { runAppleScript } from '../utils/applescript'
+import { createLogger } from '../utils/logger'
 import type { Schedule, RunLog } from '../../shared/types'
+
+const log = createLogger('scheduler')
 
 // In-memory map of active node-schedule jobs
 const jobs = new Map<string, schedule.Job>()
@@ -48,7 +51,7 @@ export function initScheduler(): void {
       if (fireDate <= new Date()) {
         insertRunLog(s.id, 'skipped', 'Missed: app was not running at scheduled time', undefined, s.scheduledAt)
         toggleSchedule(s.id, false)
-        console.log(`Missed one-time schedule ${s.id} — marked as skipped`)
+        log.info(`Missed one-time schedule ${s.id} — marked as skipped`)
         continue
       }
     }
@@ -64,7 +67,7 @@ export function initScheduler(): void {
   // Detect and catch up missed recurring runs
   detectAndCatchUpMissedRuns(missedRecurring)
 
-  console.log(`Scheduler initialized: ${jobs.size} active jobs`)
+  log.info(`Scheduler initialized: ${jobs.size} active jobs`)
 }
 
 /**
@@ -84,11 +87,11 @@ function detectAndCatchUpMissedRuns(schedules: Schedule[]): void {
     if (!lastFired || lastFired < expected) {
       const missedCount = lastFired ? 'at least 1' : 'unknown'
       insertRunLog(s.id, 'skipped', `Missed ${missedCount} run(s): app was not running`, undefined, expected.toISOString())
-      console.log(`Catching up missed recurring schedule ${s.id} — firing now`)
+      log.info(`Catching up missed recurring schedule ${s.id} — firing now`)
 
       // Fire once immediately (async, don't await — let scheduler continue init)
       executeJob(s.id).catch((err) => {
-        console.error(`Failed catch-up execution for ${s.id}:`, err)
+        log.error(`Failed catch-up execution for ${s.id}`, err)
       })
     }
   }
@@ -164,7 +167,7 @@ export function getMostRecentExpectedFire(s: Schedule, now: Date): Date | null {
  * from DB state, also detecting any schedules missed during sleep.
  */
 export function resyncAfterWake(): void {
-  console.log('Resyncing scheduler after wake...')
+  log.info('Resyncing scheduler after wake...')
   // Cancel all existing jobs (but not pending retries — they'll be re-evaluated)
   for (const [, job] of jobs) {
     job.cancel()
@@ -311,18 +314,18 @@ function scheduleRetry(
   const maxRetries = settings.maxRetries
 
   if (attempt >= maxRetries) {
-    const log = insertRunLog(
+    const entry = insertRunLog(
       scheduleId, 'failed',
       `Gave up after ${maxRetries} retries`,
       undefined, scheduledTime, attempt
     )
-    if (onExecutedCallback) onExecutedCallback(log)
-    console.log(`Schedule ${scheduleId}: gave up after ${maxRetries} retries`)
+    if (onExecutedCallback) onExecutedCallback(entry)
+    log.warn(`Schedule ${scheduleId}: gave up after ${maxRetries} retries`)
     return
   }
 
   const delayMs = RETRY_BACKOFF_MS[attempt] ?? RETRY_BACKOFF_MS[RETRY_BACKOFF_MS.length - 1]
-  console.log(`Schedule ${scheduleId}: retry ${attempt + 1}/${maxRetries} in ${delayMs}ms`)
+  log.info(`Schedule ${scheduleId}: retry ${attempt + 1}/${maxRetries} in ${delayMs}ms`)
 
   const timeout = setTimeout(async () => {
     pendingRetries.delete(scheduleId)
@@ -345,7 +348,7 @@ async function executeJob(
 ): Promise<RunLog | null> {
   // Mutex: skip if already executing this schedule
   if (executing.has(scheduleId)) {
-    console.warn(`Schedule ${scheduleId} is already executing, skipping duplicate`)
+    log.warn(`Schedule ${scheduleId} is already executing, skipping duplicate`)
     return null
   }
 
@@ -357,9 +360,9 @@ async function executeJob(
     const scheduledTime = existingScheduledTime || new Date().toISOString()
 
     if (!s.enabled) {
-      const log = insertRunLog(scheduleId, 'skipped', 'Schedule is disabled', undefined, scheduledTime)
-      if (onExecutedCallback) onExecutedCallback(log)
-      return log
+      const entry = insertRunLog(scheduleId, 'skipped', 'Schedule is disabled', undefined, scheduledTime)
+      if (onExecutedCallback) onExecutedCallback(entry)
+      return entry
     }
 
     // Check if screen is locked before attempting to send
@@ -372,11 +375,14 @@ async function executeJob(
     }
 
     if (screenLocked) {
-      const log = insertRunLog(scheduleId, 'skipped', 'Screen locked: cannot send via AppleScript', undefined, scheduledTime, retryAttempt, retryOf)
+      const entry = insertRunLog(scheduleId, 'skipped', 'Screen locked: cannot send via AppleScript', undefined, scheduledTime, retryAttempt, retryOf)
       updateLastFiredAt(scheduleId)
-      if (onExecutedCallback) onExecutedCallback(log)
-      return log
+      if (onExecutedCallback) onExecutedCallback(entry)
+      return entry
     }
+
+    const phoneMasked = s.phoneNumber.slice(0, -4).replace(/./g, '*') + s.phoneNumber.slice(-4)
+    log.info(`Executing ${scheduleId} (${s.scheduleType}) → ${phoneMasked}${s.dryRun ? ' [dry-run]' : ''}${retryAttempt > 0 ? ` [retry ${retryAttempt}]` : ''}`)
 
     const startTime = Date.now()
     const result = await sendWhatsAppMessage(s.phoneNumber, s.message, s.dryRun)
@@ -391,7 +397,9 @@ async function executeJob(
       status = 'failed'
     }
 
-    const log = insertRunLog(scheduleId, status, result.error, durationMs, scheduledTime, retryAttempt, retryOf)
+    log.info(`Execution ${scheduleId} → ${status} (${durationMs}ms)${result.error ? ` error: ${result.error}` : ''}`)
+
+    const entry = insertRunLog(scheduleId, status, result.error, durationMs, scheduledTime, retryAttempt, retryOf)
     updateLastFiredAt(scheduleId)
 
     // Auto-disable one-time schedules after any execution attempt
@@ -400,14 +408,14 @@ async function executeJob(
       cancelJob(s.id)
     }
 
-    if (onExecutedCallback) onExecutedCallback(log)
+    if (onExecutedCallback) onExecutedCallback(entry)
 
     // Schedule retry on failure (if retryable and under limit)
     if (status === 'failed' && result.error && !isNonRetryableError(result.error)) {
-      scheduleRetry(scheduleId, retryAttempt + 1, retryOf || log.id, scheduledTime)
+      scheduleRetry(scheduleId, retryAttempt + 1, retryOf || entry.id, scheduledTime)
     }
 
-    return log
+    return entry
   } finally {
     executing.delete(scheduleId)
   }

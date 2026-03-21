@@ -1,6 +1,9 @@
 import { ipcMain } from 'electron'
 import { runAppleScript, runCommand } from '../utils/applescript'
+import { createLogger } from '../utils/logger'
 import type { Contact, AccessibilityStatus } from '../../shared/types'
+
+const log = createLogger('ipc:contacts')
 
 /**
  * Cleans AppleScript contact label strings.
@@ -68,7 +71,7 @@ export function registerContactsHandlers(): void {
         throw new Error('Contacts permission not granted. Allow access in System Settings > Privacy & Security > Contacts.')
       }
       // Any other error (e.g. empty contacts, timeout) → return empty silently
-      console.warn('[contacts:search] error:', msg)
+      log.warn(`Search error: ${msg}`)
       return []
     }
   })

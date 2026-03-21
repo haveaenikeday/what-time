@@ -3,6 +3,7 @@ import { app } from 'electron'
 import { join } from 'path'
 import { chmodSync } from 'fs'
 import { nanoid } from 'nanoid'
+import { createLogger } from '../utils/logger'
 import type {
   Schedule,
   CreateScheduleInput,
@@ -11,6 +12,8 @@ import type {
   RunStatus,
   AppSettings
 } from '../../shared/types'
+
+const log = createLogger('db')
 
 let db: Database.Database
 
@@ -116,6 +119,14 @@ export function initDb(): void {
   db.pragma('journal_mode = WAL')
   db.pragma('foreign_keys = ON')
 
+  // Integrity check on startup
+  const integrity = db.pragma('integrity_check') as { integrity_check: string }[]
+  if (integrity[0]?.integrity_check !== 'ok') {
+    log.error('Database integrity check failed', integrity)
+  } else {
+    log.info(`Database opened: ${dbPath}`)
+  }
+
   db.exec(SCHEMA)
 
   // Add new columns to existing DBs (fails silently if column already exists)
@@ -139,7 +150,7 @@ export function pruneOldLogs(olderThanDays: number): void {
     `DELETE FROM run_logs WHERE fired_at < datetime('now', '-' || ? || ' days')`
   ).run(olderThanDays)
   if (result.changes > 0) {
-    console.log(`Pruned ${result.changes} log entries older than ${olderThanDays} days`)
+    log.info(`Pruned ${result.changes} log entries older than ${olderThanDays} days`)
   }
 }
 
@@ -327,5 +338,10 @@ export function updateSetting(key: string, value: string): void {
 }
 
 export function closeDb(): void {
-  if (db) db.close()
+  if (db) {
+    // Checkpoint WAL for clean shutdown
+    try { db.pragma('wal_checkpoint(TRUNCATE)') } catch {}
+    db.close()
+    log.info('Database closed')
+  }
 }

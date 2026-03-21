@@ -1,61 +1,68 @@
 # 10 — Deployment
 
 ## Purpose
-Document how this project is built and distributed based on current repository evidence.
+Document how this project is built and distributed.
 
 ## Status
-- **Confirmed from code**: macOS desktop packaging workflow via electron-builder.
-- **Not found in repository**: Vercel/Netlify/Render/Supabase deployment configs, backend hosting, CI release pipeline.
+Last updated: 2026-03-21
 
-## Confirmed from code
+## Build & Package
 
-### Deployment target
-- Single packaged Electron app for macOS (`.app`/`.dmg` style packaging via electron-builder).
-- Local SQLite database stored on each user's machine.
-- No separate frontend/backend deployment units.
+### Prerequisites
+- macOS (Apple Silicon or Intel)
+- Node.js 18+
+- npm dependencies installed (`npm install`)
 
-### Build and package commands
+### Commands
 ```bash
+# Development
+npm run dev
+
+# Build (compile main + preload + renderer)
 npm run build
-npx electron-builder --mac
+
+# Package as DMG (arm64)
+npm run dist:dmg
+
+# Or build + package in one step
+npm run dist
 ```
 
-### Packaging config clues (`package.json`)
-- `appId`: `com.veer.wa-scheduler`
-- `productName`: `WA Scheduler`
-- macOS icon/category configured.
+### What `dist` produces
+- `dist/WA Scheduler-{version}-arm64.dmg` — drag-to-Applications installer
+- `dist/mac-arm64/WA Scheduler.app` — standalone app bundle
 
-### Environment separation
-- No staging/prod env split implemented.
-- No remote secrets/environment management layer in repo.
+### Packaging config
+- **appId:** `com.veer.wa-scheduler`
+- **productName:** `WA Scheduler`
+- **Native modules:** `better-sqlite3` excluded from ASAR via `asarUnpack`
+- **Resources:** tray icons and app icon copied via `extraResources`
+- **Single instance:** enforced via `app.requestSingleInstanceLock()`
 
-### Deployment dependencies
-- Native module compatibility (`better-sqlite3`) with Electron version/arch.
-- Target machine must satisfy runtime requirements:
-  - WhatsApp Desktop installed/logged in
-  - Accessibility permission granted
-  - Unlocked macOS session at send time
+## Post-Install Requirements
+1. **WhatsApp Desktop** installed and logged in
+2. **Accessibility permission** granted (System Settings > Privacy > Accessibility)
+3. **Contacts permission** (optional) for contact search
 
-## Inferred / proposed
-- **Strongly inferred** distribution is currently personal/internal, not formal public release.
-- **Strongly inferred** code signing/notarization is not configured in repository.
+## Runtime Behavior
+- App starts hidden if launched at login (`openAsHidden: true`)
+- Window close hides to tray (scheduler keeps running)
+- Tray icon provides Show/Quit controls
+- Sleep/wake triggers full scheduler resync
+- Uncaught exceptions logged but don't kill the process
 
-## Important details
-- App behavior depends on local automation capabilities, so “deployment success” requires post-install permission checks.
-- Scheduler only runs while app process is active.
+## Smoke Test Checklist
+After packaging, verify on a clean install:
+1. DMG opens and app drags to /Applications
+2. App launches without errors
+3. Tray icon appears in menu bar
+4. Create a schedule (dry-run mode)
+5. Verify schedule fires at expected time
+6. Check Activity tab shows execution log
+7. Close window — tray icon persists, scheduler still runs
+8. Quit via tray menu — app exits cleanly
 
-## Open issues / gaps
-- Potential packaging risk from native module handling and asar settings.
-- No automated release validation/smoke test workflow.
-- No auto-update channel configured.
-
-## Recommended next steps
-1. Add documented post-package smoke test checklist (launch, schedule, send, log, permissions).
-2. Validate native module packaging on both arm64 and x64 targets.
-3. Add signing/notarization plan if wider distribution is planned.
-
-## Recommended release order (if packaging changes are made)
-1. Rebuild native deps (`npm run rebuild`).
-2. Build bundles (`npm run build`).
-3. Package app (`electron-builder --mac`).
-4. Run local install smoke tests on clean profile.
+## Known Limitations
+- Code signing/notarization not configured (personal distribution only)
+- No auto-update channel
+- arm64 only (add `x64` to `mac.target.arch` for Intel support)

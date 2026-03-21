@@ -24,7 +24,7 @@ export async function sendWhatsAppMessage(
 
   try {
     // Step 0: Check if WhatsApp is installed/running
-    const appName = settings.whatsappApp.replace(/['"\\]/g, '')
+    const appName = settings.whatsappApp.replace(/['"\\;\n\r]/g, '')
     try {
       const checkScript = `tell application "System Events" to (name of processes) contains "${appName}"`
       const running = await runAppleScript(checkScript)
