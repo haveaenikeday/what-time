@@ -81,7 +81,7 @@ function createTray(): void {
   icon.setTemplateImage(true)
 
   tray = new Tray(icon)
-  tray.setToolTip('WA Scheduler')
+  tray.setToolTip('WhaTime')
 
   const contextMenu = Menu.buildFromTemplate([
     {
@@ -97,7 +97,7 @@ function createTray(): void {
     },
     { type: 'separator' },
     {
-      label: 'Quit WA Scheduler',
+      label: 'Quit WhaTime',
       click: () => {
         isQuitting = true
         app.quit()
@@ -130,7 +130,7 @@ app.on('second-instance', () => {
 })
 
 app.whenReady().then(() => {
-  log.info(`Starting WA Scheduler v${app.getVersion()} (${isDev ? 'dev' : 'packaged'})`)
+  log.info(`Starting WhaTime v${app.getVersion()} (${isDev ? 'dev' : 'packaged'})`)
 
   // Initialize database
   initDb()

@@ -127,4 +127,27 @@ export function registerScheduleHandlers(): void {
       throw err
     }
   })
+
+  ipcMain.handle('schedule:checkConflicts', (_, data: {
+    phoneNumber: string
+    scheduleType: string
+    scheduledAt?: string | null
+    timeOfDay?: string | null
+    dayOfWeek?: number | null
+    excludeId?: string
+  }) => {
+    try {
+      return db.findConflicts(
+        data.phoneNumber,
+        data.scheduleType,
+        data.scheduledAt || null,
+        data.timeOfDay || null,
+        data.dayOfWeek ?? null,
+        data.excludeId
+      )
+    } catch (err) {
+      log.error('checkConflicts failed', err)
+      return []
+    }
+  })
 }

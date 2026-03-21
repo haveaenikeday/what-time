@@ -52,6 +52,8 @@ export interface RunLog {
   messagePreview?: string
 }
 
+export type ThemePreference = 'system' | 'light' | 'dark'
+
 export interface AppSettings {
   globalDryRun: boolean
   defaultCountryCode: string
@@ -59,6 +61,7 @@ export interface AppSettings {
   whatsappApp: string
   openAtLogin: boolean
   maxRetries: number
+  theme: ThemePreference
 }
 
 export interface SendResult {
@@ -90,6 +93,14 @@ export interface ElectronAPI {
   toggleSchedule(id: string, enabled: boolean): Promise<Schedule>
   testSend(id: string): Promise<SendResult>
   getNextFireTimes(): Promise<Record<string, string | null>>
+  checkConflicts(data: {
+    phoneNumber: string
+    scheduleType: string
+    scheduledAt?: string | null
+    timeOfDay?: string | null
+    dayOfWeek?: number | null
+    excludeId?: string
+  }): Promise<Schedule[]>
 
   // Logs
   getLogs(limit?: number): Promise<RunLog[]>

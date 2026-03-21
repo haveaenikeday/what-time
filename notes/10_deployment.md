@@ -29,12 +29,12 @@ npm run dist
 ```
 
 ### What `dist` produces
-- `dist/WA Scheduler-{version}-arm64.dmg` — drag-to-Applications installer
-- `dist/mac-arm64/WA Scheduler.app` — standalone app bundle
+- `dist/WhaTime-{version}-arm64.dmg` — drag-to-Applications installer
+- `dist/mac-arm64/WhaTime.app` — standalone app bundle
 
 ### Packaging config
-- **appId:** `com.veer.wa-scheduler`
-- **productName:** `WA Scheduler`
+- **appId:** `com.veer.whatime`
+- **productName:** `WhaTime`
 - **Native modules:** `better-sqlite3` excluded from ASAR via `asarUnpack`
 - **Resources:** tray icons and app icon copied via `extraResources`
 - **Single instance:** enforced via `app.requestSingleInstanceLock()`

@@ -4,8 +4,9 @@
 Document the frontend/backend contract surface that exists in this repo.
 
 ## Status
-- **Confirmed from code**: all runtime contracts are Electron IPC channels, not HTTP endpoints.
-- **Not found in repository**: REST/GraphQL server, RPC gateway, ML inference API.
+- Last updated: 2026-03-21
+- **Confirmed from code**: runtime contracts are Electron IPC channels, not HTTP endpoints.
+- **Not found in repository**: REST/GraphQL server, RPC gateway, cloud auth API.
 
 ## Confirmed from code
 
@@ -21,7 +22,7 @@ Document the frontend/backend contract surface that exists in this repo.
 - `schedule:update(id, patch) -> Schedule`
 - `schedule:delete(id) -> void`
 - `schedule:toggle(id, enabled) -> Schedule`
-- `schedule:testSend(id) -> runtime returns RunLog | null (see mismatch note)`
+- `schedule:testSend(id) -> SendResult`
 - `schedule:getNextFireTimes() -> Record<string, string | null>`
 
 ### Logs channels
@@ -44,28 +45,23 @@ Document the frontend/backend contract surface that exists in this repo.
 - Main emits `schedule:executed` event to renderer with run-log payload.
 - Hooks/context subscribe and refresh schedules/logs.
 
-### Error behavior
-- IPC handlers usually `throw` on failure; renderer promise rejects.
-- Contacts search explicitly throws permission message for denied access codes.
-- Send pipeline returns structured success/error object internally, but test-send path currently bypasses that shape at API boundary.
-
-### Loading/timeout expectations
-- Renderer sets local loading state before/after async IPC calls.
-- AppleScript helper has default command timeout (10s) and contacts search uses explicit timeout values.
-
-## Inferred / proposed
-- **Strongly inferred** there is no need for external API gateway unless product scope expands beyond local desktop automation.
+### Validation and error behavior
+- `schedule:create` validates phone/message/type/time shape in handler before DB write.
+- `settings:update` rejects unsupported keys via whitelist in DB service.
+- IPC handlers mostly throw on failure; renderer promise rejects.
+- Contacts search maps permission denial to a user-facing explicit error message.
 
 ## Important details
-- This app has an internal API surface (IPC), so contract quality still matters like any backend API.
-- `shared/types.ts` is intended as contract source of truth but is currently inconsistent in one key method.
+- `shared/types.ts` is the intended contract source of truth and now matches `testSend` runtime shape.
+- Contract completeness is covered by tests (`tests/ipc-contracts.test.ts`).
+- Input validation logic is regression-tested (`tests/ipc-validation.test.ts`).
 
 ## Open issues / gaps
-- **Confirmed from code** mismatch: `ElectronAPI.testSend` is typed as `Promise<SendResult>`, but backend returns `Promise<RunLog | null>` (`testSendSchedule -> executeJob`).
-- `settings:update` key/value shape is fully open (no enum validation in handler).
-- Error envelope is not standardized across channels.
+- Success/error envelopes are not standardized across all channels.
+- Validation depth is strong for create, but patch/update constraints are less strict.
+- Error payloads are mostly plain thrown strings, limiting typed UI diagnostics.
 
 ## Recommended next steps
-1. Align `testSend` return type and implementation contract.
-2. Add typed success/error envelopes for all channels.
-3. Restrict `settings:update` to allowed key set in handler.
+1. Introduce a shared typed IPC response envelope (`{ ok, data?, error? }`) for consistency.
+2. Add explicit validation for `schedule:update` edge cases and settings value ranges.
+3. Add contract tests for event payload shape (`schedule:executed`) and error cases.

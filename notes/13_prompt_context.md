@@ -4,6 +4,7 @@
 Reusable context for future coding agents working on this repository.
 
 ## Status
+- Last updated: 2026-03-21
 - **Confirmed from code** baseline.
 - Keep this file updated whenever architecture/contracts materially change.
 
@@ -32,6 +33,12 @@ Reusable context for future coding agents working on this repository.
 - When changing DB fields, update: SCHEMA/migrations -> row mappers -> shared types -> IPC/preload -> renderer consumers.
 - Preserve event-driven refresh behavior based on `schedule:executed`.
 
+### Reliability behavior to preserve
+- One-time missed schedules become `skipped` and auto-disable at startup.
+- Recurring missed runs trigger one immediate catch-up execution on startup/wake.
+- Failed sends can retry with exponential backoff (respect `max_retries`).
+- Close-to-tray behavior keeps scheduler alive unless explicitly quit.
+
 ### Design rules
 - Maintain current desktop shell pattern (sidebar + tab content).
 - Reuse existing UI primitives and utility classes for consistency.
@@ -39,29 +46,28 @@ Reusable context for future coding agents working on this repository.
 
 ### Things to preserve
 - Recurrence support across all 6 schedule types.
-- One-time auto-disable and startup missed-one-time skip behavior.
 - Dry-run semantics (schedule-level and global override).
 - Local-only data model unless explicit product direction changes.
+- Permission checks and user-facing guidance in Settings.
 
-## Inferred / proposed
-- **Strongly inferred** agents should prioritize reliability and contract correctness over feature breadth.
+## Current weak points
+- In-process scheduler still depends on process uptime (force-quit risk).
+- No first-run onboarding/checklist.
+- No sync/portable backup workflow.
+- No standardized IPC error envelope.
 
-## Important details
-- Known weak points today:
-  - `testSend` contract mismatch between shared type and runtime return.
-  - In-process scheduling requires app runtime availability.
-  - Duplicate schema source drift risk.
-- Nonexistent systems agents should not assume:
-  - HTTP backend
-  - Auth provider/session middleware
-  - Cloud DB, RLS, or ML APIs
+## Nonexistent systems agents should not assume
+- HTTP backend
+- Auth provider/session middleware
+- Cloud DB/RLS
+- Multi-user permission model
 
-## Open issues / gaps
-- No automated tests currently protect scheduling/IPC contracts.
-- No formal migration version tracking.
+## Validation baseline
+- Tests currently exist for scheduler logic, IPC channel completeness, IPC input validation, and type mapping.
+- Minimum pre-merge check: `npm run test` and `npm run build`.
 
 ## Recommended next steps for future agents
-1. Start every task by validating current behavior against `electron/services/*` and `shared/types.ts`.
+1. Validate current behavior against `electron/services/*`, `electron/ipc/*`, and `shared/types.ts`.
 2. If changing contracts, update both types and runtime handlers in the same PR.
-3. Run build checks before finishing (`npm run build`).
+3. Keep docs in `notes/` aligned whenever runtime behavior changes.
 4. Avoid introducing cloud dependencies unless explicitly requested.

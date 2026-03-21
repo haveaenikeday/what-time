@@ -10,6 +10,7 @@ const api: ElectronAPI = {
   toggleSchedule: (id, enabled) => ipcRenderer.invoke('schedule:toggle', id, enabled),
   testSend: (id) => ipcRenderer.invoke('schedule:testSend', id),
   getNextFireTimes: () => ipcRenderer.invoke('schedule:getNextFireTimes'),
+  checkConflicts: (data) => ipcRenderer.invoke('schedule:checkConflicts', data),
 
   getLogs: (limit) => ipcRenderer.invoke('logs:getAll', limit),
   getLogsBySchedule: (scheduleId) => ipcRenderer.invoke('logs:bySchedule', scheduleId),

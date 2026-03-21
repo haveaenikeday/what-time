@@ -4,8 +4,9 @@
 Document the implemented local database model and behavior used by the app.
 
 ## Status
-- **Confirmed from code**: SQLite schema and mappings in `electron/services/db.service.ts`.
-- **Strongly inferred**: `electron/db/schema.sql` is no longer canonical and is partially stale.
+- Last updated: 2026-03-21
+- **Confirmed from code**: SQLite schema/mappings in `electron/services/db.service.ts`.
+- Runtime `SCHEMA` in `db.service.ts` is the canonical source in this repo.
 
 ## Confirmed from code
 
@@ -30,11 +31,12 @@ Columns implemented in runtime SCHEMA:
 - `dry_run INTEGER NOT NULL DEFAULT 0`
 - `created_at TEXT NOT NULL DEFAULT datetime('now','localtime')`
 - `updated_at TEXT NOT NULL DEFAULT datetime('now','localtime')`
+- `last_fired_at TEXT` (migration-added)
 
 Usage notes:
 - One-time schedules use `scheduled_at`.
-- Daily/weekly/extended use `time_of_day`; weekly also uses `day_of_week`.
-- Quarterly/half-yearly/yearly use `day_of_month` and optional/required `month_of_year`.
+- Daily/weekly use `time_of_day`; weekly also uses `day_of_week`.
+- Quarterly/half-yearly/yearly use `day_of_month` and `month_of_year`.
 
 ### Table: `run_logs`
 Columns implemented in runtime SCHEMA/migrations:
@@ -44,8 +46,10 @@ Columns implemented in runtime SCHEMA/migrations:
 - `error_message TEXT`
 - `fired_at TEXT NOT NULL`
 - `completed_at TEXT`
-- `execution_duration INTEGER` (added by migration)
-- `scheduled_time TEXT` (added by migration)
+- `execution_duration INTEGER` (migration)
+- `scheduled_time TEXT` (migration)
+- `retry_attempt INTEGER DEFAULT 0` (migration)
+- `retry_of TEXT` (migration)
 
 Indexes:
 - `idx_run_logs_schedule(schedule_id)`
@@ -60,29 +64,30 @@ Seeded default keys:
 - `default_country_code = '+1'`
 - `send_delay_ms = '3000'`
 - `whatsapp_app = 'WhatsApp'`
+- `open_at_login = '0'`
+- `max_retries = '3'`
 
 ### Relationships and ownership
 - `schedules (1) -> (many) run_logs` via `schedule_id`, cascade delete enabled.
 - No user/account ownership columns (single local-user model).
 
 ### Migrations and retention
-- Startup `ALTER TABLE` attempts for: `day_of_month`, `month_of_year`, `execution_duration`, `scheduled_time`.
+- Startup `ALTER TABLE` attempts for legacy DB compatibility.
 - Startup log pruning: deletes run logs older than 90 days.
-
-## Inferred / proposed
-- **Strongly inferred** risk: duplicate schema definition (`db.service.ts` SCHEMA vs `electron/db/schema.sql`) can drift.
+- DB integrity check runs at startup.
 
 ## Important details
 - App-level camelCase mapping is handled by `rowToSchedule` and `rowToRunLog`.
-- Settings values are stored as text and parsed into booleans/numbers at read time.
-- No encryption at rest for SQLite file is implemented.
+- Settings values are stored as text and parsed to booleans/numbers at read time.
+- `updateSetting` now enforces a key whitelist (`VALID_SETTINGS_KEYS`).
+- DB file permissions are tightened to owner-only (`chmod 600`) where possible.
 
 ## Open issues / gaps
-- Runtime schema does not enforce `schedule_type` enum/check in SQL (validation is mostly application-level).
-- `settings:update` handler accepts arbitrary key/value updates.
-- No migration version table/history; migration is opportunistic `ALTER TABLE ... try/catch`.
+- SQL does not enforce full schedule-type/field compatibility (validation is mostly in IPC/app logic).
+- No migration version table/history; migrations are opportunistic `ALTER TABLE ... try/catch`.
+- No encryption at rest for SQLite file.
 
 ## Recommended next steps
-1. Make one schema source canonical (prefer runtime or generated migrations).
-2. Add explicit DB-level constraints for schedule type and recurrence field combinations.
-3. Add lightweight migration versioning to reduce drift risk.
+1. Add DB-level constraints for core recurrence validity where practical.
+2. Introduce migration version tracking for safer schema evolution.
+3. Add optional encrypted backup/export flow for portability + privacy.

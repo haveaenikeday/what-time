@@ -6,7 +6,8 @@ import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
 import { Badge } from '@/components/ui/badge'
 import { api } from '@/lib/ipc'
-import { ShieldCheck, ShieldAlert, AlertTriangle, BookUser } from 'lucide-react'
+import { Select } from '@/components/ui/select'
+import { ShieldCheck, ShieldAlert, AlertTriangle, BookUser, Sun, Moon, Monitor } from 'lucide-react'
 import type { AccessibilityStatus } from '../../shared/types'
 
 /** Debounced text input that only persists after the user stops typing. */
@@ -161,12 +162,12 @@ export function Settings() {
       </div>
 
       {/* Warnings */}
-      <div className="rounded-lg border border-yellow-200 bg-yellow-50 p-4 space-y-2">
+      <div className="rounded-lg border border-yellow-200 bg-yellow-50 dark:border-yellow-900 dark:bg-yellow-950/30 p-4 space-y-2">
         <div className="flex items-center gap-2">
-          <AlertTriangle className="h-4 w-4 text-yellow-600" />
-          <h2 className="font-medium text-yellow-800 text-sm">Important Notes</h2>
+          <AlertTriangle className="h-4 w-4 text-yellow-600 dark:text-yellow-500" />
+          <h2 className="font-medium text-yellow-800 dark:text-yellow-400 text-sm">Important Notes</h2>
         </div>
-        <ul className="text-xs text-yellow-700 space-y-1 list-disc list-inside">
+        <ul className="text-xs text-yellow-700 dark:text-yellow-500/80 space-y-1 list-disc list-inside">
           <li>Your Mac must be unlocked for scheduled sends to work</li>
           <li>WhatsApp Desktop must be installed and logged in</li>
           <li>The app runs in the background when you close the window (check the tray icon)</li>
@@ -184,7 +185,7 @@ export function Settings() {
           <div>
             <Label>Start at Login</Label>
             <p className="text-xs text-muted-foreground">
-              Launch WA Scheduler automatically when you log in (runs in background)
+              Launch WhaTime automatically when you log in (runs in background)
             </p>
           </div>
         </div>
@@ -203,6 +204,30 @@ export function Settings() {
               When enabled, all sends will open WhatsApp but not press Enter
             </p>
           </div>
+        </div>
+      </div>
+
+      {/* Theme */}
+      <div className="space-y-2">
+        <Label htmlFor="theme">Appearance</Label>
+        <div className="flex items-center gap-3">
+          {settings.theme === 'dark' ? (
+            <Moon className="h-4 w-4 text-muted-foreground" />
+          ) : settings.theme === 'light' ? (
+            <Sun className="h-4 w-4 text-muted-foreground" />
+          ) : (
+            <Monitor className="h-4 w-4 text-muted-foreground" />
+          )}
+          <Select
+            id="theme"
+            value={settings.theme}
+            onValueChange={(v) => updateSetting('theme', v)}
+            className="w-40"
+          >
+            <option value="system">System</option>
+            <option value="light">Light</option>
+            <option value="dark">Dark</option>
+          </Select>
         </div>
       </div>
 
@@ -234,6 +259,27 @@ export function Settings() {
           value={String(settings.sendDelayMs)}
           onSave={(v) => updateSetting('send_delay_ms', v)}
           className="w-32"
+        />
+      </div>
+
+      {/* Max Retries */}
+      <div className="space-y-2">
+        <Label htmlFor="max-retries">Max Retries</Label>
+        <p className="text-xs text-muted-foreground">
+          How many times to retry a failed send (with exponential backoff: 10s → 30s → 90s).
+        </p>
+        <DebouncedInput
+          id="max-retries"
+          type="number"
+          min={1}
+          max={10}
+          step={1}
+          value={String(settings.maxRetries)}
+          onSave={(v) => {
+            const n = Math.max(1, Math.min(10, parseInt(v, 10) || 3))
+            updateSetting('max_retries', String(n))
+          }}
+          className="w-24"
         />
       </div>
 

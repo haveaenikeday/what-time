@@ -6,7 +6,7 @@ import { Label } from '@/components/ui/label'
 import { Select } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
 import { api } from '@/lib/ipc'
-import { Search, User, X, CalendarDays } from 'lucide-react'
+import { Search, User, X, CalendarDays, AlertTriangle } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { ExtendedScheduleDialog } from '@/components/ExtendedScheduleDialog'
 import type { Schedule, CreateScheduleInput, ScheduleType, Contact } from '../../shared/types'
@@ -97,6 +97,10 @@ export function ScheduleForm({ initial, defaultDate, onSubmit, onCancel }: Sched
   const [extConfigured, setExtConfigured] = useState(
     !!initial && isExtendedType(initial.scheduleType)
   )
+
+  // Conflict detection
+  const [conflicts, setConflicts] = useState<Schedule[]>([])
+  const conflictDismissedRef = useRef(false)
 
   // Contact search state
   const [contactQuery, setContactQuery] = useState('')
@@ -200,6 +204,26 @@ export function ScheduleForm({ initial, defaultDate, onSubmit, onCancel }: Sched
     e.preventDefault()
     if (!validate()) return
 
+    // Check for conflicts (unless already dismissed)
+    if (!conflictDismissedRef.current) {
+      try {
+        const found = await api.checkConflicts({
+          phoneNumber: phoneNumber.replace(/[^\d+]/g, ''),
+          scheduleType,
+          scheduledAt: scheduleType === 'one_time' ? new Date(scheduledAt).toISOString() : null,
+          timeOfDay: scheduleType !== 'one_time' ? timeOfDay : null,
+          dayOfWeek: scheduleType === 'weekly' ? dayOfWeek : null,
+          excludeId: initial?.id
+        })
+        if (found.length > 0) {
+          setConflicts(found)
+          return // Show warning, don't submit yet
+        }
+      } catch {
+        // If conflict check fails, proceed with save
+      }
+    }
+
     setSubmitting(true)
     try {
       const data: CreateScheduleInput = {
@@ -226,6 +250,8 @@ export function ScheduleForm({ initial, defaultDate, onSubmit, onCancel }: Sched
       await onSubmit(data)
     } finally {
       setSubmitting(false)
+      setConflicts([])
+      conflictDismissedRef.current = false
     }
   }
 
@@ -462,6 +488,46 @@ export function ScheduleForm({ initial, defaultDate, onSubmit, onCancel }: Sched
             Dry run (don't actually send)
           </Label>
         </div>
+
+        {/* ── Conflict Warning ──────────────────────────────── */}
+        {conflicts.length > 0 && (
+          <div className="rounded-lg border border-yellow-200 bg-yellow-50 dark:border-yellow-900 dark:bg-yellow-950/30 p-3 space-y-2">
+            <div className="flex items-center gap-2">
+              <AlertTriangle className="h-4 w-4 text-yellow-600 dark:text-yellow-500 shrink-0" />
+              <p className="text-sm font-medium text-yellow-800 dark:text-yellow-400">
+                Possible duplicate — {conflicts.length} existing schedule{conflicts.length > 1 ? 's' : ''} for this contact at the same time
+              </p>
+            </div>
+            <ul className="text-xs text-yellow-700 dark:text-yellow-500/80 space-y-1 pl-6 list-disc">
+              {conflicts.map((c) => (
+                <li key={c.id}>
+                  {c.contactName || c.phoneNumber}: {c.scheduleType} at {c.timeOfDay || c.scheduledAt}
+                </li>
+              ))}
+            </ul>
+            <div className="flex gap-2">
+              <Button
+                type="submit"
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  conflictDismissedRef.current = true
+                  setConflicts([])
+                }}
+              >
+                Save Anyway
+              </Button>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={() => setConflicts([])}
+              >
+                Go Back
+              </Button>
+            </div>
+          </div>
+        )}
 
         {/* ── Actions ────────────────────────────────────────── */}
         <div className="flex gap-2 justify-end pt-2">

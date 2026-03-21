@@ -8,7 +8,8 @@ const defaultSettings: AppSettings = {
   sendDelayMs: 3000,
   whatsappApp: 'WhatsApp',
   openAtLogin: false,
-  maxRetries: 3
+  maxRetries: 3,
+  theme: 'system'
 }
 
 export function useSettings() {

@@ -1,11 +1,13 @@
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useEffect } from 'react'
 import { useScheduleContext } from '@/contexts/ScheduleContext'
 import { useToast } from '@/components/ui/toast'
 import { ScheduleModal } from '@/components/ScheduleModal'
 import { StatusBadge } from '@/components/StatusBadge'
 import { Button } from '@/components/ui/button'
 import { Switch } from '@/components/ui/switch'
-import { Plus, Pencil, Trash2, Play, Copy, CalendarClock, Clock } from 'lucide-react'
+import { Input } from '@/components/ui/input'
+import { Select } from '@/components/ui/select'
+import { Plus, Pencil, Trash2, Play, Copy, CalendarClock, Clock, Search } from 'lucide-react'
 import { truncate, formatDateTime, formatRelativeTime, getTimelineBucket, BUCKET_LABELS, type TimelineBucket } from '@/lib/utils'
 import type { Schedule, CreateScheduleInput } from '../../shared/types'
 
@@ -58,6 +60,48 @@ export function Dashboard() {
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null)
   const [confirmTestSend, setConfirmTestSend] = useState<string | null>(null)
 
+  // Listen for Cmd+N from App.tsx
+  useEffect(() => {
+    const handler = () => handleNew()
+    window.addEventListener('app:new-schedule', handler)
+    return () => window.removeEventListener('app:new-schedule', handler)
+  }, [])
+
+  const [searchQuery, setSearchQuery] = useState('')
+  const [sortBy, setSortBy] = useState<'next_fire' | 'contact_az' | 'created' | 'updated'>('next_fire')
+
+  // Filter schedules by search query
+  const filteredSchedules = useMemo(() => {
+    if (!searchQuery.trim()) return schedules
+    const q = searchQuery.toLowerCase()
+    return schedules.filter(
+      (s) =>
+        s.contactName.toLowerCase().includes(q) ||
+        s.phoneNumber.toLowerCase().includes(q) ||
+        s.message.toLowerCase().includes(q)
+    )
+  }, [schedules, searchQuery])
+
+  // Sort helper
+  const sortSchedules = (items: Schedule[]): Schedule[] => {
+    return [...items].sort((a, b) => {
+      if (sortBy === 'contact_az') {
+        const nameA = (a.contactName || a.phoneNumber).toLowerCase()
+        const nameB = (b.contactName || b.phoneNumber).toLowerCase()
+        return nameA.localeCompare(nameB)
+      }
+      if (sortBy === 'created') return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+      if (sortBy === 'updated') return new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()
+      // default: next_fire (soonest first)
+      const nextA = a.scheduleType === 'one_time' ? a.scheduledAt : fireTimes[a.id]
+      const nextB = b.scheduleType === 'one_time' ? b.scheduledAt : fireTimes[b.id]
+      if (!nextA && !nextB) return 0
+      if (!nextA) return 1
+      if (!nextB) return -1
+      return new Date(nextA).getTime() - new Date(nextB).getTime()
+    })
+  }
+
   // Group schedules by time horizon
   const { grouped, pausedSchedules } = useMemo(() => {
     const buckets: Record<TimelineBucket, Schedule[]> = {
@@ -65,7 +109,7 @@ export function Dashboard() {
     }
     const paused: Schedule[] = []
 
-    for (const s of schedules) {
+    for (const s of filteredSchedules) {
       if (!s.enabled) {
         paused.push(s)
         continue
@@ -77,10 +121,10 @@ export function Dashboard() {
 
     const result = BUCKET_ORDER
       .filter((key) => buckets[key].length > 0)
-      .map((key) => ({ key, label: BUCKET_LABELS[key], items: buckets[key] }))
+      .map((key) => ({ key, label: BUCKET_LABELS[key], items: sortSchedules(buckets[key]) }))
 
-    return { grouped: result, pausedSchedules: paused }
-  }, [schedules, fireTimes])
+    return { grouped: result, pausedSchedules: sortSchedules(paused) }
+  }, [filteredSchedules, fireTimes, sortBy])
 
   function getNextRun(s: Schedule): string | null {
     if (s.scheduleType === 'one_time') return s.scheduledAt
@@ -302,6 +346,31 @@ export function Dashboard() {
         </Button>
       </div>
 
+      {/* Search + Sort bar */}
+      {schedules.length > 0 && (
+        <div className="flex items-center gap-3">
+          <div className="relative flex-1">
+            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
+            <Input
+              placeholder="Search by contact, phone, or message..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="pl-8 h-8 text-sm"
+            />
+          </div>
+          <Select
+            value={sortBy}
+            onValueChange={(v) => setSortBy(v as typeof sortBy)}
+            className="w-44 h-8 text-sm"
+          >
+            <option value="next_fire">Next fire (soonest)</option>
+            <option value="contact_az">Contact A–Z</option>
+            <option value="created">Recently created</option>
+            <option value="updated">Recently updated</option>
+          </Select>
+        </div>
+      )}
+
       {schedules.length === 0 ? (
         <div className="text-center py-20 space-y-4">
           <div className="inline-flex items-center justify-center w-16 h-16 rounded-full bg-primary/10 mb-2">
@@ -318,11 +387,20 @@ export function Dashboard() {
         </div>
       ) : (
         <div className="space-y-6">
+          {/* No results for search */}
+          {filteredSchedules.length === 0 && searchQuery.trim() && (
+            <div className="text-center py-12">
+              <p className="text-sm text-muted-foreground">No schedules match "{searchQuery}"</p>
+            </div>
+          )}
+
           {/* Grouped active schedules */}
           {grouped.map(({ key, label, items }) => (
             <div key={key}>
               <div className="sticky top-0 z-10 bg-background/95 backdrop-blur py-2 border-b mb-3">
-                <h2 className="text-sm font-medium text-muted-foreground">{label}</h2>
+                <h2 className="text-sm font-medium text-muted-foreground">
+                  {label} <span className="text-xs ml-1 opacity-60">({items.length})</span>
+                </h2>
               </div>
               <div className="space-y-2">
                 {items.map(renderScheduleCard)}
@@ -334,7 +412,9 @@ export function Dashboard() {
           {pausedSchedules.length > 0 && (
             <div>
               <div className="sticky top-0 z-10 bg-background/95 backdrop-blur py-2 border-b mb-3">
-                <h2 className="text-sm font-medium text-muted-foreground">Paused</h2>
+                <h2 className="text-sm font-medium text-muted-foreground">
+                  Paused <span className="text-xs ml-1 opacity-60">({pausedSchedules.length})</span>
+                </h2>
               </div>
               <div className="space-y-2">
                 {pausedSchedules.map(renderScheduleCard)}

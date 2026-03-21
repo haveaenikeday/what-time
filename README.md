@@ -1,4 +1,4 @@
-# WhatsApp Text Scheduler
+# WhaTime
 
 A local macOS desktop app for scheduling WhatsApp messages. No cloud backend, no unofficial APIs — just local scheduling + macOS automation.
 

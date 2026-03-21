@@ -1,7 +1,7 @@
 import Database from 'better-sqlite3'
 import { app } from 'electron'
 import { join } from 'path'
-import { chmodSync } from 'fs'
+import { chmodSync, existsSync, copyFileSync, mkdirSync } from 'fs'
 import { nanoid } from 'nanoid'
 import { createLogger } from '../utils/logger'
 import type {
@@ -19,6 +19,46 @@ let db: Database.Database
 
 function getDbPath(): string {
   return join(app.getPath('userData'), 'schedules.db')
+}
+
+// Migrate DB from old "WA Scheduler" userData path to new "WhaTime" path
+function migrateFromOldPath(): void {
+  const oldDir = join(app.getPath('home'), 'Library', 'Application Support', 'WA Scheduler')
+  const oldDb = join(oldDir, 'schedules.db')
+  const newDb = getDbPath()
+
+  if (!existsSync(oldDb)) return
+
+  // If new DB exists, only skip migration if it already has data
+  if (existsSync(newDb)) {
+    try {
+      const tempDb = new Database(newDb, { readonly: true })
+      let count = 0
+      try {
+        const row = tempDb.prepare('SELECT COUNT(*) as count FROM schedules').get() as { count: number }
+        count = row?.count ?? 0
+      } catch {
+        // Table doesn't exist yet — treat as empty
+      }
+      tempDb.close()
+      if (count > 0) return // New DB has data — don't overwrite
+      // count === 0: fall through to overwrite with old data
+    } catch {
+      return // Can't open new DB — leave it alone
+    }
+  }
+
+  try {
+    const newDir = app.getPath('userData')
+    if (!existsSync(newDir)) mkdirSync(newDir, { recursive: true })
+    copyFileSync(oldDb, newDb)
+    // Also copy WAL/SHM files if they exist
+    if (existsSync(oldDb + '-wal')) copyFileSync(oldDb + '-wal', newDb + '-wal')
+    if (existsSync(oldDb + '-shm')) copyFileSync(oldDb + '-shm', newDb + '-shm')
+    log.info(`Migrated database from "${oldDir}" to "${newDir}"`)
+  } catch (err) {
+    log.error('Failed to migrate database from old path', err)
+  }
 }
 
 const SCHEMA = `
@@ -62,7 +102,8 @@ INSERT OR IGNORE INTO settings (key, value) VALUES
   ('send_delay_ms', '3000'),
   ('whatsapp_app', 'WhatsApp'),
   ('open_at_login', '0'),
-  ('max_retries', '3');
+  ('max_retries', '3'),
+  ('theme', 'system');
 `
 
 const VALID_SETTINGS_KEYS = new Set([
@@ -71,7 +112,8 @@ const VALID_SETTINGS_KEYS = new Set([
   'send_delay_ms',
   'whatsapp_app',
   'open_at_login',
-  'max_retries'
+  'max_retries',
+  'theme'
 ])
 
 // Map a DB row (snake_case) to a Schedule (camelCase)
@@ -114,6 +156,7 @@ function rowToRunLog(row: Record<string, unknown>): RunLog {
 }
 
 export function initDb(): void {
+  migrateFromOldPath()
   const dbPath = getDbPath()
   db = new Database(dbPath)
   db.pragma('journal_mode = WAL')
@@ -236,6 +279,50 @@ export function toggleSchedule(id: string, enabled: boolean): Schedule {
   return updateSchedule(id, { enabled })
 }
 
+/**
+ * Find schedules that might conflict (same phone + overlapping fire time).
+ * Returns matching schedule IDs (excluding the given excludeId).
+ */
+export function findConflicts(
+  phoneNumber: string,
+  scheduleType: string,
+  scheduledAt: string | null,
+  timeOfDay: string | null,
+  dayOfWeek: number | null,
+  excludeId?: string
+): Schedule[] {
+  const phone = phoneNumber.replace(/[\s\-()]/g, '')
+
+  // Find schedules with same phone number (normalized)
+  const rows = db.prepare(
+    `SELECT * FROM schedules WHERE REPLACE(REPLACE(REPLACE(REPLACE(phone_number, ' ', ''), '-', ''), '(', ''), ')', '') = ? AND enabled = 1`
+  ).all(phone) as Record<string, unknown>[]
+
+  const candidates = rows.map(rowToSchedule).filter((s) => s.id !== excludeId)
+
+  // Check for time overlap
+  return candidates.filter((existing) => {
+    // one_time vs one_time: exact datetime match
+    if (scheduleType === 'one_time' && existing.scheduleType === 'one_time') {
+      if (!scheduledAt || !existing.scheduledAt) return false
+      return new Date(scheduledAt).getTime() === new Date(existing.scheduledAt).getTime()
+    }
+
+    // Both recurring with same timeOfDay
+    if (timeOfDay && existing.timeOfDay && timeOfDay === existing.timeOfDay) {
+      // daily overlaps with everything at that time
+      if (scheduleType === 'daily' || existing.scheduleType === 'daily') return true
+
+      // weekly: same day of week
+      if (scheduleType === 'weekly' && existing.scheduleType === 'weekly') {
+        return dayOfWeek === existing.dayOfWeek
+      }
+    }
+
+    return false
+  })
+}
+
 // --- Run Logs ---
 
 export function insertRunLog(
@@ -326,7 +413,8 @@ export function getSettings(): AppSettings {
     sendDelayMs: parseInt(map.send_delay_ms || '3000', 10),
     whatsappApp: map.whatsapp_app || 'WhatsApp',
     openAtLogin: map.open_at_login === '1',
-    maxRetries: parseInt(map.max_retries || '3', 10)
+    maxRetries: parseInt(map.max_retries || '3', 10),
+    theme: (map.theme as 'system' | 'light' | 'dark') || 'system'
   }
 }
 
