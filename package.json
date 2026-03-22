@@ -1,11 +1,11 @@
 {
-  "name": "whatime",
+  "name": "whattime",
   "version": "1.0.0",
   "description": "Locally run WhatsApp message scheduler for macOS",
   "main": "./out/main/index.js",
   "author": "Veer",
   "license": "MIT",
-  "productName": "WhaTime",
+  "productName": "WhatTime",
   "scripts": {
     "dev": "electron-vite dev",
     "build": "electron-vite build",
@@ -47,8 +47,8 @@
     "vitest": "^4.1.0"
   },
   "build": {
-    "appId": "com.veer.whatime",
-    "productName": "WhaTime",
+    "appId": "com.veer.whattime",
+    "productName": "WhatTime",
     "directories": {
       "output": "dist"
     },
@@ -79,7 +79,7 @@
       ]
     },
     "dmg": {
-      "title": "WhaTime",
+      "title": "WhatTime",
       "contents": [
         {
           "x": 130,

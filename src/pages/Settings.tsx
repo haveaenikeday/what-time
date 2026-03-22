@@ -187,7 +187,7 @@ export function Settings() {
           <div>
             <Label>Start at Login</Label>
             <p className="text-xs text-muted-foreground">
-              Launch WhaTime automatically when you log in (runs in background)
+              Launch WhatTime automatically when you log in (runs in background)
             </p>
           </div>
         </div>

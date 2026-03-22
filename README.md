@@ -1,14 +1,14 @@
-# WhaTime
+# WhatTime
 
 <div align="center">
-  <img src="./resources/WhaTime.png" alt="WhaTime Logo" width="128" height="128" />
+  <img src="./resources/WhatTime.png" alt="WhatTime Logo" width="128" height="128" />
 </div>
 
 A local macOS desktop app for scheduling WhatsApp messages. No cloud backend, no unofficial APIs — just local scheduling + macOS automation.
 
 ## What It Does
 
-**WhaTime** lets you schedule WhatsApp messages to be sent automatically at specific times. Perfect for:
+**WhatTime** lets you schedule WhatsApp messages to be sent automatically at specific times. Perfect for:
 - Sending reminders to contacts at scheduled times
 - Daily/weekly recurring messages (motivation quotes, check-ins, reminders)
 - One-time scheduled messages for later
@@ -21,7 +21,7 @@ All scheduling happens locally on your Mac — no data leaves your computer.
 
 ### Scheduling
 - The Electron main process runs `node-schedule` jobs in-memory
-- Schedules are persisted in a local SQLite database (`~/Library/Application Support/whatsapp-text-scheduler/schedules.db`)
+- Schedules are persisted in a local SQLite database (`~/Library/Application Support/WhatTime/schedules.db`)
 - On app startup, all enabled schedules are loaded and registered as jobs
 - Supports one-time, daily, and weekly recurring schedules
 - One-time schedules auto-disable after firing
@@ -39,7 +39,7 @@ All scheduling happens locally on your Mac — no data leaves your computer.
 
 ## User Interface
 
-WhaTime features a clean, intuitive macOS-native interface built with React + Tailwind CSS:
+WhatTime features a clean, intuitive macOS-native interface built with React + Tailwind CSS:
 
 ### Dashboard
 - **Schedule List** — View all your scheduled messages at a glance
@@ -99,8 +99,8 @@ WhaTime features a clean, intuitive macOS-native interface built with React + Ta
 
 ```bash
 # Clone the repository
-git clone <repository-url> whatsapp-text-scheduler
-cd whatsapp-text-scheduler
+git clone <repository-url> what-time
+cd what-time
 ```
 
 ### Step 2: Install Dependencies
@@ -111,7 +111,7 @@ npm install
 
 ### Step 3: Rebuild Native Modules
 
-WhaTime uses `better-sqlite3` which requires compilation for Electron:
+WhatTime uses `better-sqlite3` which requires compilation for Electron:
 
 ```bash
 npm run rebuild
@@ -125,7 +125,7 @@ npm run dev
 
 This will:
 - Start the Electron app
-- Open the WhaTime window with a fresh database at `~/Library/Application Support/whatsapp-text-scheduler/schedules.db`
+- Open the WhatTime window with a local database at `~/Library/Application Support/WhatTime/schedules.db`
 - Hot-reload enabled for development
 
 ### Step 5: Grant Accessibility Permission
@@ -137,9 +137,9 @@ The app needs permission to send keystrokes to WhatsApp. Follow these steps:
 3. Click the lock icon to unlock changes
 4. Click the **+** button and add the Electron app:
    - In dev mode: look for "Electron Helper"
-   - After building: look for "WhaTime"
+   - After building: look for "WhatTime"
 5. Toggle it **ON** in the list
-6. You can verify this in WhaTime's **Settings tab** — there's a "Check" button that confirms permission
+6. You can verify this in WhatTime's **Settings tab** — there's a "Check" button that confirms permission
 
 ### Step 6: Create Your First Schedule
 
@@ -161,17 +161,33 @@ The app needs permission to send keystrokes to WhatsApp. Follow these steps:
 
 ## Building for Production
 
-To build a standalone macOS app:
+To compile the app:
 
 ```bash
 npm run build
 ```
 
-This creates a `.dmg` installer in the `dist/` folder. The built app:
+To package a standalone macOS app:
+
+```bash
+npm run dist:dmg
+```
+
+This creates a `.dmg` installer in the `dist/` folder. The packaged app:
 - Runs as a standard macOS application
 - Can be moved to `/Applications`
-- Has the full WhaTime icon and branding
+- Has the full WhatTime icon and branding
 - Still requires Accessibility permission to send messages
+
+## Updating an Existing Local Install
+
+If you already have `WhaTime` installed locally:
+
+1. Quit `WhaTime` from the tray menu so the old background scheduler is not still running.
+2. Build the renamed app with `npm run dist:dmg`.
+3. Install `dist/WhatTime-{version}-arm64.dmg` and replace the old app in `/Applications`.
+4. Launch `WhatTime` once so it can migrate your existing `schedules.db` into `~/Library/Application Support/WhatTime/`.
+5. Re-check **System Settings > Privacy & Security > Accessibility** and re-enable **Start at Login** if macOS treats `WhatTime` as a new app.
 
 
 ## Known Limitations
@@ -206,4 +222,3 @@ src/                       # Renderer (React)
 shared/
   types.ts                 # TypeScript types shared across IPC
 ```
-

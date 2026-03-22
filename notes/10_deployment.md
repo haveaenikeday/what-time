@@ -29,15 +29,22 @@ npm run dist
 ```
 
 ### What `dist` produces
-- `dist/WhaTime-{version}-arm64.dmg` — drag-to-Applications installer
-- `dist/mac-arm64/WhaTime.app` — standalone app bundle
+- `dist/WhatTime-{version}-arm64.dmg` — drag-to-Applications installer
+- `dist/mac-arm64/WhatTime.app` — standalone app bundle
 
 ### Packaging config
-- **appId:** `com.veer.whatime`
-- **productName:** `WhaTime`
+- **appId:** `com.veer.whattime`
+- **productName:** `WhatTime`
 - **Native modules:** `better-sqlite3` excluded from ASAR via `asarUnpack`
 - **Resources:** tray icons and app icon copied via `extraResources`
 - **Single instance:** enforced via `app.requestSingleInstanceLock()`
+
+## Updating An Existing Local Install
+1. Quit the old `WhaTime` app from the tray before replacing it.
+2. Build and package the renamed app with `npm run dist:dmg`.
+3. Install `dist/WhatTime-{version}-arm64.dmg` and move `WhatTime.app` into `/Applications`.
+4. Launch `WhatTime` once so it can migrate `schedules.db` from older app-support folders into `~/Library/Application Support/WhatTime/`.
+5. Re-check Accessibility permissions and re-enable Start at Login if macOS treats the renamed app as a new install.
 
 ## Post-Install Requirements
 1. **WhatsApp Desktop** installed and logged in

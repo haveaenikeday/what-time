@@ -1,4 +1,4 @@
-# WhaTime — UX/Product Audit & Improvement Plan
+# WhatTime — UX/Product Audit & Improvement Plan
 
 ## Context
 
@@ -152,7 +152,7 @@ This is a comprehensive UX/product audit of a local-first macOS Electron app for
 
 **Better flow:**
 1. On launch, if `schedules` table empty AND `onboarding_completed !== '1'`: show wizard modal
-2. **Step 1 — Welcome**: "WhaTime automates sending WhatsApp messages at times you choose."
+2. **Step 1 — Welcome**: "WhatTime automates sending WhatsApp messages at times you choose."
 3. **Step 2 — Permissions**: Inline Accessibility check. Green ✓ if granted, CTA "Grant Permission" → `openAccessibilitySettings()`. Poll every 2s. Cannot proceed until granted. Optional Contacts check.
 4. **Step 3 — First Schedule**: Embedded `ScheduleForm` with dry-run pre-checked. "Create a test schedule to verify everything works."
 5. **Step 4 — Success**: Dry-run test send succeeds → "You're all set!"
@@ -203,7 +203,7 @@ This is a comprehensive UX/product audit of a local-first macOS Electron app for
 
 **Better flow:**
 1. **"Today" summary card** at top of Dashboard — "3 sent, 1 failed, 2 upcoming today." Click to expand.
-2. **Tray tooltip** — "WhaTime — 3 sent today, 1 failed" instead of static title
+2. **Tray tooltip** — "WhatTime — 3 sent today, 1 failed" instead of static title
 3. **Tray icon badge** — green (all good) / red dot (failures today) via `tray.setImage()` variant
 
 **Edge cases:**
@@ -275,7 +275,7 @@ This is a comprehensive UX/product audit of a local-first macOS Electron app for
 
 ### Option 2: Auto-Backup to User Folder (Ship Second)
 
-**Architecture:** On every schedule create/update/delete, write full export JSON to `~/Library/Application Support/WhaTime/backups/backup-{ISO-timestamp}.json`. Keep last 10, prune older on startup.
+**Architecture:** On every schedule create/update/delete, write full export JSON to `~/Library/Application Support/WhatTime/backups/backup-{ISO-timestamp}.json`. Keep last 10, prune older on startup.
 
 **Conflict strategy:** N/A — write-only snapshots. Restore = Phase 1 import with "Replace all."
 

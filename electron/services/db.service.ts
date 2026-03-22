@@ -21,13 +21,24 @@ function getDbPath(): string {
   return join(app.getPath('userData'), 'schedules.db')
 }
 
-// Migrate DB from old "WA Scheduler" userData path to new "WhaTime" path
-function migrateFromOldPath(): void {
-  const oldDir = join(app.getPath('home'), 'Library', 'Application Support', 'WA Scheduler')
-  const oldDb = join(oldDir, 'schedules.db')
-  const newDb = getDbPath()
+const LEGACY_USERDATA_DIRS = [
+  'WhaTime',
+  'whatsapp-text-scheduler',
+  'whatime',
+  'WA Scheduler'
+]
 
-  if (!existsSync(oldDb)) return
+// Migrate DB from earlier app names into the current WhatTime userData path
+function migrateFromOldPath(): void {
+  const newDb = getDbPath()
+  const newDir = app.getPath('userData')
+  const oldDir = LEGACY_USERDATA_DIRS
+    .map((dirName) => join(app.getPath('home'), 'Library', 'Application Support', dirName))
+    .find((dir) => dir !== newDir && existsSync(join(dir, 'schedules.db')))
+
+  if (!oldDir) return
+
+  const oldDb = join(oldDir, 'schedules.db')
 
   // If new DB exists, only skip migration if it already has data
   if (existsSync(newDb)) {
@@ -49,7 +60,6 @@ function migrateFromOldPath(): void {
   }
 
   try {
-    const newDir = app.getPath('userData')
     if (!existsSync(newDir)) mkdirSync(newDir, { recursive: true })
     copyFileSync(oldDb, newDb)
     // Also copy WAL/SHM files if they exist

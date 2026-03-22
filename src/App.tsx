@@ -91,9 +91,9 @@ export default function App() {
         <nav className="w-52 border-r bg-muted/30 pt-4 flex flex-col">
           <div className="px-4 pb-4 border-b border-border/50 mb-2">
             <div className="flex items-center gap-2.5">
-              <img src={iconSrc} alt="WhaTime" className="w-8 h-8 rounded-lg" />
+              <img src={iconSrc} alt="WhatTime" className="w-8 h-8 rounded-lg" />
               <div>
-                <h1 className="text-sm font-semibold text-foreground leading-tight">WhaTime</h1>
+                <h1 className="text-sm font-semibold text-foreground leading-tight">WhatTime</h1>
                 <p className="text-[10px] text-muted-foreground">Local message scheduling</p>
               </div>
             </div>

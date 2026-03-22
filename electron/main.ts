@@ -8,6 +8,7 @@ import type { RunLog } from '../shared/types'
 
 const log = createLogger('app')
 const isDev = !app.isPackaged
+const APP_NAME = 'WhatTime'
 
 // --- Single instance lock ---
 // Prevents duplicate app instances which would cause DB locking and duplicate sends
@@ -81,7 +82,7 @@ function createTray(): void {
   icon.setTemplateImage(true)
 
   tray = new Tray(icon)
-  tray.setToolTip('WhaTime')
+  tray.setToolTip(APP_NAME)
 
   const contextMenu = Menu.buildFromTemplate([
     {
@@ -97,7 +98,7 @@ function createTray(): void {
     },
     { type: 'separator' },
     {
-      label: 'Quit WhaTime',
+      label: `Quit ${APP_NAME}`,
       click: () => {
         isQuitting = true
         app.quit()
@@ -130,7 +131,7 @@ app.on('second-instance', () => {
 })
 
 app.whenReady().then(() => {
-  log.info(`Starting WhaTime v${app.getVersion()} (${isDev ? 'dev' : 'packaged'})`)
+  log.info(`Starting ${APP_NAME} v${app.getVersion()} (${isDev ? 'dev' : 'packaged'})`)
 
   // Initialize database
   initDb()

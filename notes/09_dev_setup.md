@@ -55,11 +55,14 @@ npm run dist:dmg
 - Renderer alias `@ -> src`.
 - Shared alias `@shared -> shared` for node/renderer.
 - DB path resolves under Electron `userData`, not project root.
+- Current packaged DB path: `~/Library/Application Support/WhatTime/schedules.db`.
+- Existing local installs migrate forward from older app-support folders on first launch.
 
 ## Important details
 - `better-sqlite3` is native; rebuild is required after Electron/dependency updates.
 - App close hides to tray in normal usage; explicit quit is needed to stop scheduler.
 - Start-at-login behavior is controlled by persisted `open_at_login` setting.
+- If you are replacing an older `WhaTime` install, re-check Accessibility and Start at Login after installing `WhatTime.app`.
 
 ## Open issues / gaps
 - No automated preflight command for checking permissions/WhatsApp readiness.
