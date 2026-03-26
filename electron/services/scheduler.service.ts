@@ -16,11 +16,20 @@ const executing = new Set<string>()
 // Pending retry timeouts per schedule ID
 const pendingRetries = new Map<string, NodeJS.Timeout>()
 
+// Pending group catch-up timeouts (schedule ID → timeout handle)
+const pendingCatchUps = new Map<string, NodeJS.Timeout>()
+
 // Callback for notifying the renderer when a job executes
 let onExecutedCallback: ((log: RunLog) => void) | null = null
 
 // Retry backoff intervals in ms (indexed by attempt number: 0→10s, 1→30s, 2→90s)
 const RETRY_BACKOFF_MS = [10_000, 30_000, 90_000]
+
+// Grace delay before catch-up fires for group messages (gives user time after app launch)
+const GROUP_CATCH_UP_DELAY_MS = 5_000
+
+// Minimum interval — skip catch-up if lastFiredAt is within this window of now
+const CATCH_UP_RECENCY_THRESHOLD_MS = 2 * 60 * 1000
 
 // Errors that should not be retried (non-transient)
 const NON_RETRYABLE_PATTERNS = [
@@ -76,6 +85,7 @@ export function initScheduler(): void {
  */
 function detectAndCatchUpMissedRuns(schedules: Schedule[]): void {
   const now = new Date()
+  let groupCatchUpIndex = 0
 
   for (const s of schedules) {
     const expected = getMostRecentExpectedFire(s, now)
@@ -86,21 +96,39 @@ function detectAndCatchUpMissedRuns(schedules: Schedule[]): void {
     // If never fired, or last fired before the most recent expected fire time
     if (!lastFired || lastFired < expected) {
       // Don't catch up brand-new schedules that were created after the expected fire time
-      // e.g. schedule created at 1:36 AM for daily 09:00 — expected fire was yesterday 09:00
-      // This is not a "missed" run, it just hasn't had a chance to fire yet
       const createdAt = new Date(s.createdAt)
       if (!lastFired && createdAt > expected) {
         continue
       }
 
+      // Recency guard: skip if lastFiredAt is very recent (handles rapid wake/restart cycles)
+      if (lastFired && (now.getTime() - lastFired.getTime()) < CATCH_UP_RECENCY_THRESHOLD_MS) {
+        log.info(`Skipping catch-up for ${s.id} — fired recently (${Math.round((now.getTime() - lastFired.getTime()) / 1000)}s ago)`)
+        continue
+      }
+
       const missedCount = lastFired ? 'at least 1' : 'unknown'
       insertRunLog(s.id, 'skipped', `Missed ${missedCount} run(s): app was not running`, undefined, expected.toISOString())
-      log.info(`Catching up missed recurring schedule ${s.id} — firing now`)
+      updateLastFiredAt(s.id)
 
-      // Fire once immediately (async, don't await — let scheduler continue init)
-      executeJob(s.id).catch((err) => {
-        log.error(`Failed catch-up execution for ${s.id}`, err)
-      })
+      // Group sends activate WhatsApp UI — delay and stagger catch-ups
+      if (s.recipientType === 'group') {
+        const delay = GROUP_CATCH_UP_DELAY_MS + (groupCatchUpIndex * 8_000)
+        groupCatchUpIndex++
+        log.info(`Catching up missed group schedule ${s.id} — firing in ${delay}ms`)
+        const timeout = setTimeout(() => {
+          pendingCatchUps.delete(s.id)
+          executeJob(s.id).catch((err) => {
+            log.error(`Failed catch-up execution for ${s.id}`, err)
+          })
+        }, delay)
+        pendingCatchUps.set(s.id, timeout)
+      } else {
+        log.info(`Catching up missed recurring schedule ${s.id} — firing now`)
+        executeJob(s.id).catch((err) => {
+          log.error(`Failed catch-up execution for ${s.id}`, err)
+        })
+      }
     }
   }
 }
@@ -176,6 +204,13 @@ export function getMostRecentExpectedFire(s: Schedule, now: Date): Date | null {
  */
 export function resyncAfterWake(): void {
   log.info('Resyncing scheduler after wake...')
+  // Cancel pending group catch-up timeouts from previous init
+  for (const [id, timeout] of pendingCatchUps) {
+    clearTimeout(timeout)
+    log.info(`Cleared pending catch-up timeout for ${id}`)
+  }
+  pendingCatchUps.clear()
+
   // Cancel all existing jobs (but not pending retries — they'll be re-evaluated)
   for (const [, job] of jobs) {
     job.cancel()
@@ -476,4 +511,9 @@ export function shutdownScheduler(): void {
     clearTimeout(timeout)
   }
   pendingRetries.clear()
+
+  for (const [, timeout] of pendingCatchUps) {
+    clearTimeout(timeout)
+  }
+  pendingCatchUps.clear()
 }
