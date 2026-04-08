@@ -48,3 +48,24 @@ release/
 
 # Coverage
 coverage/
+
+# Test snapshots
+*.snap
+__snapshots__/
+
+# ESLint cache
+.eslintcache
+
+# Vite cache
+.vite/
+
+# Electron crash reports
+crash-reports/
+
+# electron-builder debug artifacts
+builder-debug.yml
+builder-effective-config.yaml
+
+# macOS extended attributes
+.AppleDouble
+.LSOverride
