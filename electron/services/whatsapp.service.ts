@@ -1,7 +1,7 @@
 import { runAppleScript, runCommand } from '../utils/applescript'
 import { getSettings } from './db.service'
 import { createLogger } from '../utils/logger'
-import type { SendResult, AccessibilityStatus } from '../../shared/types'
+import type { SendResult, SendOptions, AccessibilityStatus } from '../../shared/types'
 
 const log = createLogger('whatsapp')
 
@@ -53,14 +53,16 @@ async function ensureWhatsAppRunning(appName: string, isDryRun: boolean): Promis
  * 1. Open WhatsApp chat using the whatsapp:// URL scheme (pre-fills message)
  * 2. Wait for WhatsApp to load the chat
  * 3. Press Enter via AppleScript System Events to send (skipped in dry-run)
+ * 4. Close the chat window with Cmd+W (skipped when opts.keepOpen is true)
  */
 export async function sendWhatsAppMessage(
   phoneNumber: string,
   message: string,
-  dryRun: boolean
+  opts: SendOptions
 ): Promise<SendResult> {
   const settings = getSettings()
-  const isDryRun = dryRun || settings.globalDryRun
+  const isDryRun = opts.dryRun || settings.globalDryRun
+  const keepOpen = opts.keepOpen === true
   const appName = settings.whatsappApp.replace(/['"\\;\n\r]/g, '')
 
   try {
@@ -79,15 +81,15 @@ export async function sendWhatsAppMessage(
       return { success: true, dryRun: true }
     }
 
-    // Activate WhatsApp and press Enter to send, then close the window
+    // Activate WhatsApp and press Enter to send; optionally close the window after.
+    const closeLine = keepOpen ? '' : 'delay 1.0\n          keystroke "w" using command down'
     const sendScript = `
       tell application "${appName}" to activate
       delay 0.5
       tell application "System Events"
         tell process "${appName}"
           keystroke return
-          delay 1.0
-          keystroke "w" using command down
+          ${closeLine}
         end tell
       end tell
     `
@@ -118,10 +120,11 @@ export async function sendWhatsAppMessage(
 export async function sendWhatsAppGroupMessage(
   groupName: string,
   message: string,
-  dryRun: boolean
+  opts: SendOptions
 ): Promise<SendResult> {
   const settings = getSettings()
-  const isDryRun = dryRun || settings.globalDryRun
+  const isDryRun = opts.dryRun || settings.globalDryRun
+  const keepOpen = opts.keepOpen === true
   const appName = settings.whatsappApp.replace(/['"\\;\n\r]/g, '')
   const escapedGroupName = escapeForAppleScript(groupName)
   const escapedMessage = escapeForAppleScript(message)
@@ -210,14 +213,14 @@ export async function sendWhatsAppGroupMessage(
       return { success: true, dryRun: true }
     }
 
-    // Phase 6: Press Enter to send, then close the window
-    log.info(`[phase 6] Group send → "${groupName}": sending`)
+    // Phase 6: Press Enter to send; optionally close the window after.
+    log.info(`[phase 6] Group send → "${groupName}": sending${keepOpen ? ' (keep-open)' : ''}`)
+    const closeLine = keepOpen ? '' : 'delay 1.0\n          keystroke "w" using command down'
     const sendScript = `
       tell application "System Events"
         tell process "${appName}"
           keystroke return
-          delay 1.0
-          keystroke "w" using command down
+          ${closeLine}
         end tell
       end tell
     `

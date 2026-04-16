@@ -2,6 +2,14 @@ import * as schedule from 'node-schedule'
 import { getAllSchedules, getScheduleById, getSettings, insertRunLog, toggleSchedule, updateLastFiredAt } from './db.service'
 import { sendWhatsAppMessage, sendWhatsAppGroupMessage } from './whatsapp.service'
 import { runAppleScript } from '../utils/applescript'
+import { isSystemInCall } from '../utils/system-state'
+import {
+  clearQueue,
+  enqueueSend,
+  processNextInQueue,
+  setExecutor,
+  type QueueItem
+} from './sendQueue'
 import { createLogger } from '../utils/logger'
 import type { Schedule, RunLog } from '../../shared/types'
 
@@ -35,6 +43,18 @@ const pendingRetries = new Map<string, NodeJS.Timeout>()
 // Pending group catch-up timeouts (schedule ID → timeout handle)
 const pendingCatchUps = new Map<string, NodeJS.Timeout>()
 
+// Schedules currently held while a call is in progress.
+// firstDetectedAt marks when the hold started so we can enforce callMaxWaitMs
+// across call sessions that come and go (back-to-back calls).
+interface CallWait {
+  timeout: NodeJS.Timeout
+  firstDetectedAt: number
+  retryAttempt: number
+  retryOf?: string
+  scheduledTime: string
+}
+const pendingCallWaits = new Map<string, CallWait>()
+
 // Callback for notifying the renderer when a job executes
 let onExecutedCallback: ((log: RunLog) => void) | null = null
 
@@ -64,6 +84,9 @@ export function setOnExecutedCallback(cb: (log: RunLog) => void): void {
  * detect missed one-time schedules, and catch up missed recurring runs.
  */
 export function initScheduler(): void {
+  // Wire the send queue executor. Idempotent — setExecutor replaces any prior.
+  setExecutor(executeQueuedSend)
+
   const schedules = getAllSchedules()
   const missedRecurring: Schedule[] = []
 
@@ -316,6 +339,9 @@ export function registerJob(s: Schedule): void {
 /**
  * Cancel and remove a job from the in-memory map.
  * Also clears any pending retry for this schedule.
+ * Note: pending call-waits and queue entries intentionally survive — they're
+ * self-cleaning (their handlers re-read the schedule and no-op if missing/disabled)
+ * which preserves held sends across sleep/wake cycles.
  */
 export function cancelJob(scheduleId: string): void {
   const existing = jobs.get(scheduleId)
@@ -397,15 +423,135 @@ function scheduleRetry(
 }
 
 /**
- * Execute a scheduled job: send the WhatsApp message and log the result.
+ * Clear any pending call-wait timer for this schedule. Idempotent.
+ */
+function clearPendingCallWait(scheduleId: string): void {
+  const wait = pendingCallWaits.get(scheduleId)
+  if (wait) {
+    clearTimeout(wait.timeout)
+    pendingCallWaits.delete(scheduleId)
+  }
+}
+
+/**
+ * Schedule a recheck in `callPollIntervalMs` ms.
+ * `firstDetectedAt` is preserved across rechecks so we can enforce the
+ * overall max-wait ceiling (`callMaxWaitMs`) even across consecutive calls.
+ */
+function scheduleCallRecheck(
+  scheduleId: string,
+  retryAttempt: number,
+  retryOf: string | undefined,
+  scheduledTime: string,
+  firstDetectedAt: number
+): void {
+  clearPendingCallWait(scheduleId)
+  const { callPollIntervalMs } = getSettings()
+  const timeout = setTimeout(() => {
+    pendingCallWaits.delete(scheduleId)
+    executeJob(scheduleId, retryAttempt, retryOf, scheduledTime).catch((err) => {
+      log.error(`Call-wait recheck failed for ${scheduleId}`, err)
+    })
+  }, callPollIntervalMs)
+  pendingCallWaits.set(scheduleId, {
+    timeout,
+    firstDetectedAt,
+    retryAttempt,
+    retryOf,
+    scheduledTime
+  })
+}
+
+/**
+ * Actually perform the send and write the run_log. Shared by the direct
+ * execution path and the queue executor. `keepOpen=true` asks the WhatsApp
+ * service to skip Cmd+W so the next queued send can reuse the session.
+ */
+async function performSend(
+  s: Schedule,
+  retryAttempt: number,
+  retryOf: string | undefined,
+  scheduledTime: string,
+  keepOpen: boolean
+): Promise<RunLog> {
+  const recipientLabel = s.recipientType === 'group'
+    ? `group:"${s.groupName}"`
+    : s.phoneNumber.slice(0, -4).replace(/./g, '*') + s.phoneNumber.slice(-4)
+  log.info(`Executing ${s.id} (${s.scheduleType}) → ${recipientLabel}${s.dryRun ? ' [dry-run]' : ''}${retryAttempt > 0 ? ` [retry ${retryAttempt}]` : ''}${keepOpen ? ' [keep-open]' : ''}`)
+
+  const startTime = Date.now()
+  const result = s.recipientType === 'group'
+    ? await sendWhatsAppGroupMessage(s.groupName, s.message, { dryRun: s.dryRun, keepOpen })
+    : await sendWhatsAppMessage(s.phoneNumber, s.message, { dryRun: s.dryRun, keepOpen })
+  const durationMs = Date.now() - startTime
+
+  let status: 'success' | 'failed' | 'dry_run'
+  if (result.dryRun) status = 'dry_run'
+  else if (result.success) status = 'success'
+  else status = 'failed'
+
+  log.info(`Execution ${s.id} → ${status} (${durationMs}ms)${result.error ? ` error: ${result.error}` : ''}`)
+
+  const entry = enrichRunLog(insertRunLog(s.id, status, result.error, durationMs, scheduledTime, retryAttempt, retryOf), s)
+  updateLastFiredAt(s.id)
+
+  if (s.scheduleType === 'one_time') {
+    toggleSchedule(s.id, false)
+    cancelJob(s.id)
+  }
+
+  if (onExecutedCallback) onExecutedCallback(entry)
+
+  if (status === 'failed' && result.error && !isNonRetryableError(result.error)) {
+    scheduleRetry(s.id, retryAttempt + 1, retryOf || entry.id, scheduledTime)
+  }
+
+  return entry
+}
+
+/**
+ * Queue executor — invoked by sendQueue.processNextInQueue.
+ * Re-reads the schedule (it may have been disabled or deleted while queued),
+ * then calls performSend. Never throws — writes a run_log for every outcome.
+ */
+async function executeQueuedSend(item: QueueItem, keepOpen: boolean): Promise<void> {
+  const s = getScheduleById(item.scheduleId)
+  if (!s) {
+    log.warn(`Queued send for missing schedule ${item.scheduleId} — dropping`)
+    return
+  }
+  if (!s.enabled) {
+    const entry = enrichRunLog(
+      insertRunLog(s.id, 'skipped', 'Disabled before queued send fired', undefined, item.scheduledTime, item.retryAttempt, item.retryOf),
+      s
+    )
+    if (onExecutedCallback) onExecutedCallback(entry)
+    return
+  }
+  try {
+    await performSend(s, item.retryAttempt, item.retryOf, item.scheduledTime, keepOpen)
+  } catch (err) {
+    log.error(`performSend threw for ${s.id}`, err)
+    const errMsg = err instanceof Error ? err.message : String(err)
+    const entry = enrichRunLog(
+      insertRunLog(s.id, 'failed', errMsg, undefined, item.scheduledTime, item.retryAttempt, item.retryOf),
+      s
+    )
+    if (onExecutedCallback) onExecutedCallback(entry)
+  }
+}
+
+/**
+ * Execute a scheduled job: check guards (disabled/locked/in-call), then either
+ * route through the queue (if one is active/enabled) or send directly.
  * Uses a mutex to prevent double-sends from overlapping timer + manual triggers.
- * Supports retry with backoff on transient failures.
  */
 async function executeJob(
   scheduleId: string,
   retryAttempt = 0,
   retryOf?: string,
-  existingScheduledTime?: string
+  existingScheduledTime?: string,
+  bypassCallCheck = false
 ): Promise<RunLog | null> {
   // Mutex: skip if already executing this schedule
   if (executing.has(scheduleId)) {
@@ -419,6 +565,7 @@ async function executeJob(
     if (!s) return null
 
     const scheduledTime = existingScheduledTime || new Date().toISOString()
+    const settings = getSettings()
 
     if (!s.enabled) {
       const entry = enrichRunLog(insertRunLog(scheduleId, 'skipped', 'Schedule is disabled', undefined, scheduledTime), s)
@@ -442,45 +589,56 @@ async function executeJob(
       return entry
     }
 
-    const recipientLabel = s.recipientType === 'group'
-      ? `group:"${s.groupName}"`
-      : s.phoneNumber.slice(0, -4).replace(/./g, '*') + s.phoneNumber.slice(-4)
-    log.info(`Executing ${scheduleId} (${s.scheduleType}) → ${recipientLabel}${s.dryRun ? ' [dry-run]' : ''}${retryAttempt > 0 ? ` [retry ${retryAttempt}]` : ''}`)
-
-    const startTime = Date.now()
-    const result = s.recipientType === 'group'
-      ? await sendWhatsAppGroupMessage(s.groupName, s.message, s.dryRun)
-      : await sendWhatsAppMessage(s.phoneNumber, s.message, s.dryRun)
-    const durationMs = Date.now() - startTime
-
-    let status: 'success' | 'failed' | 'dry_run'
-    if (result.dryRun) {
-      status = 'dry_run'
-    } else if (result.success) {
-      status = 'success'
-    } else {
-      status = 'failed'
+    // Call-aware hold: if the user is on a call, postpone and re-check later.
+    // `bypassCallCheck` is true for manual test-sends — the user clicked Send,
+    // they want immediate feedback even if it fails.
+    if (settings.pauseDuringCalls && !bypassCallCheck) {
+      const existing = pendingCallWaits.get(scheduleId)
+      const firstDetectedAt = existing?.firstDetectedAt ?? Date.now()
+      const callState = await isSystemInCall()
+      if (callState.inCall) {
+        const heldForMs = Date.now() - firstDetectedAt
+        if (heldForMs >= settings.callMaxWaitMs) {
+          // Give up after the configured ceiling.
+          pendingCallWaits.delete(scheduleId)
+          const mins = Math.round(settings.callMaxWaitMs / 60000)
+          const entry = enrichRunLog(
+            insertRunLog(scheduleId, 'skipped', `Gave up: still in call after ${mins}m`, undefined, scheduledTime, retryAttempt, retryOf),
+            s
+          )
+          updateLastFiredAt(scheduleId)
+          if (onExecutedCallback) onExecutedCallback(entry)
+          return entry
+        }
+        // Still in call — log silently (no run_log), schedule another recheck.
+        log.info(`Schedule ${scheduleId} held: call in progress (${callState.reason ?? 'detected'}) — rechecking in ${settings.callPollIntervalMs}ms`)
+        scheduleCallRecheck(scheduleId, retryAttempt, retryOf, scheduledTime, firstDetectedAt)
+        return null
+      }
+      // Call ended (or never was) — clear any stale wait entry.
+      if (existing) pendingCallWaits.delete(scheduleId)
     }
 
-    log.info(`Execution ${scheduleId} → ${status} (${durationMs}ms)${result.error ? ` error: ${result.error}` : ''}`)
-
-    const entry = enrichRunLog(insertRunLog(scheduleId, status, result.error, durationMs, scheduledTime, retryAttempt, retryOf), s)
-    updateLastFiredAt(scheduleId)
-
-    // Auto-disable one-time schedules after any execution attempt
-    if (s.scheduleType === 'one_time') {
-      toggleSchedule(s.id, false)
-      cancelJob(s.id)
+    // Route through the queue so same-minute schedules serialize correctly
+    // (groups first, contacts after) and chained sends reuse the WhatsApp session.
+    // `processNextInQueue` is guarded by its own `processing` flag — calling it
+    // concurrently from multiple executeJob paths is safe (second call no-ops).
+    if (settings.enableSendQueue) {
+      const enqueued = enqueueSend({
+        scheduleId,
+        priority: s.recipientType === 'group' ? 0 : 1,
+        scheduledTime,
+        retryAttempt,
+        retryOf
+      })
+      if (enqueued) {
+        processNextInQueue().catch((err) => log.error('queue drain failed', err))
+      }
+      return null
     }
 
-    if (onExecutedCallback) onExecutedCallback(entry)
-
-    // Schedule retry on failure (if retryable and under limit)
-    if (status === 'failed' && result.error && !isNonRetryableError(result.error)) {
-      scheduleRetry(scheduleId, retryAttempt + 1, retryOf || entry.id, scheduledTime)
-    }
-
-    return entry
+    // Legacy direct-send path (queue disabled via setting).
+    return await performSend(s, retryAttempt, retryOf, scheduledTime, false)
   } finally {
     executing.delete(scheduleId)
   }
@@ -488,11 +646,13 @@ async function executeJob(
 
 /**
  * Manually trigger a test send for a schedule (respects dry-run setting).
- * Cancels any pending retry to avoid conflicts.
+ * Cancels any pending retry or call-wait to give the user immediate feedback.
+ * Bypasses the call-in-progress check — user clicked Send intentionally.
  */
 export async function testSendSchedule(scheduleId: string): Promise<RunLog | null> {
   clearPendingRetry(scheduleId)
-  return executeJob(scheduleId)
+  clearPendingCallWait(scheduleId)
+  return executeJob(scheduleId, 0, undefined, undefined, true)
 }
 
 /**
@@ -517,7 +677,7 @@ export function getAllNextFireTimes(): Record<string, string | null> {
 }
 
 /**
- * Shutdown: cancel all jobs and pending retries.
+ * Shutdown: cancel all jobs and pending timers, drain queue.
  */
 export function shutdownScheduler(): void {
   for (const [, job] of jobs) {
@@ -534,4 +694,11 @@ export function shutdownScheduler(): void {
     clearTimeout(timeout)
   }
   pendingCatchUps.clear()
+
+  for (const [, wait] of pendingCallWaits) {
+    clearTimeout(wait.timeout)
+  }
+  pendingCallWaits.clear()
+
+  clearQueue()
 }

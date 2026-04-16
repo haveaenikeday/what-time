@@ -112,14 +112,14 @@ describe('sendWhatsAppGroupMessage', () => {
   it('returns success:true dryRun:true when dryRun=true', async () => {
     mockDeps()
     const { sendWhatsAppGroupMessage } = await import('../electron/services/whatsapp.service')
-    const result = await sendWhatsAppGroupMessage('Test Group', 'Hello!', true)
+    const result = await sendWhatsAppGroupMessage('Test Group', 'Hello!', { dryRun: true })
     expect(result).toEqual({ success: true, dryRun: true })
   })
 
   it('returns success:true dryRun:false when dryRun=false', async () => {
     mockDeps()
     const { sendWhatsAppGroupMessage } = await import('../electron/services/whatsapp.service')
-    const result = await sendWhatsAppGroupMessage('Test Group', 'Hello!', false)
+    const result = await sendWhatsAppGroupMessage('Test Group', 'Hello!', { dryRun: false })
     expect(result).toEqual({ success: true, dryRun: false })
   })
 
@@ -138,7 +138,7 @@ describe('sendWhatsAppGroupMessage', () => {
       })
     }))
     const { sendWhatsAppGroupMessage } = await import('../electron/services/whatsapp.service')
-    const result = await sendWhatsAppGroupMessage('Test Group', 'Hello!', false)
+    const result = await sendWhatsAppGroupMessage('Test Group', 'Hello!', { dryRun: false })
     expect(result.success).toBe(false)
     expect(result.error).toContain('Automation permission not granted')
   })
@@ -156,7 +156,7 @@ describe('sendWhatsAppGroupMessage', () => {
       })
     }))
     const { sendWhatsAppGroupMessage } = await import('../electron/services/whatsapp.service')
-    const result = await sendWhatsAppGroupMessage('Test Group', 'Hello!', false)
+    const result = await sendWhatsAppGroupMessage('Test Group', 'Hello!', { dryRun: false })
     expect(result).toEqual({ success: true, dryRun: true })
   })
 })

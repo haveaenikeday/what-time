@@ -316,6 +316,105 @@ export function Settings() {
         </div>
       </div>
 
+      {/* Smart Scheduling */}
+      <div className="rounded-lg border p-4 space-y-4">
+        <h2 className="font-medium">Smart Scheduling</h2>
+
+        {/* Pause during calls */}
+        <div className="flex items-center gap-3">
+          <Switch
+            checked={settings.pauseDuringCalls}
+            onCheckedChange={(v) => updateSetting('pause_during_calls', v ? '1' : '0')}
+          />
+          <div>
+            <Label>Pause sends during calls</Label>
+            <p className="text-xs text-muted-foreground">
+              Hold scheduled sends while FaceTime, Zoom, Meet, Teams, Slack huddles, etc. are active — resume when the call ends.
+            </p>
+          </div>
+        </div>
+
+        {/* Max wait (minutes) — stored as ms */}
+        <div className="space-y-2 pl-12">
+          <Label htmlFor="call-max-wait">Max wait before giving up (minutes)</Label>
+          <p className="text-xs text-muted-foreground">
+            If the call is still going after this long, the send is skipped with a log entry.
+          </p>
+          <DebouncedInput
+            id="call-max-wait"
+            type="number"
+            min={1}
+            max={240}
+            step={1}
+            value={String(Math.round(settings.callMaxWaitMs / 60000))}
+            onSave={(v) => {
+              const mins = Math.max(1, Math.min(240, parseInt(v, 10) || 30))
+              updateSetting('call_max_wait_ms', String(mins * 60000))
+            }}
+            className="w-24"
+            disabled={!settings.pauseDuringCalls}
+          />
+        </div>
+
+        {/* Poll interval (seconds) — stored as ms */}
+        <div className="space-y-2 pl-12">
+          <Label htmlFor="call-poll-interval">Recheck interval (seconds)</Label>
+          <p className="text-xs text-muted-foreground">
+            How often to check whether the call has ended.
+          </p>
+          <DebouncedInput
+            id="call-poll-interval"
+            type="number"
+            min={15}
+            max={600}
+            step={15}
+            value={String(Math.round(settings.callPollIntervalMs / 1000))}
+            onSave={(v) => {
+              const secs = Math.max(15, Math.min(600, parseInt(v, 10) || 60))
+              updateSetting('call_poll_interval_ms', String(secs * 1000))
+            }}
+            className="w-24"
+            disabled={!settings.pauseDuringCalls}
+          />
+        </div>
+
+        {/* Enable queue */}
+        <div className="flex items-center gap-3 pt-2 border-t">
+          <Switch
+            checked={settings.enableSendQueue}
+            onCheckedChange={(v) => updateSetting('enable_send_queue', v ? '1' : '0')}
+          />
+          <div>
+            <Label>Serialize simultaneous sends</Label>
+            <p className="text-xs text-muted-foreground">
+              When multiple schedules fire at the same time, queue them — groups first, contacts after. Keeps WhatsApp open between chained sends.
+            </p>
+          </div>
+        </div>
+
+        {/* Inter-send delay (ms) */}
+        <div className="space-y-2 pl-12">
+          <Label htmlFor="queue-delay">Gap between chained sends (ms)</Label>
+          <p className="text-xs text-muted-foreground">
+            Pause between consecutive sends in the queue. Too short and WhatsApp may lag behind.
+          </p>
+          <DebouncedInput
+            id="queue-delay"
+            type="number"
+            min={500}
+            max={10000}
+            step={250}
+            value={String(settings.queueInterSendDelayMs)}
+            onSave={(v) => {
+              const ms = Math.max(500, Math.min(10000, parseInt(v, 10) || 1500))
+              updateSetting('queue_inter_send_delay_ms', String(ms))
+            }}
+            className="w-28"
+            disabled={!settings.enableSendQueue}
+          />
+        </div>
+      </div>
+
       {/* Developer */}
       <div className="rounded-lg border p-4 space-y-3">
         <h2 className="font-medium">Developer</h2>

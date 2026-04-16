@@ -141,7 +141,12 @@ INSERT OR IGNORE INTO settings (key, value) VALUES
   ('open_at_login', '0'),
   ('max_retries', '3'),
   ('theme', 'system'),
-  ('enable_group_scheduling', '0');
+  ('enable_group_scheduling', '0'),
+  ('pause_during_calls', '1'),
+  ('call_max_wait_ms', '1800000'),
+  ('call_poll_interval_ms', '60000'),
+  ('enable_send_queue', '1'),
+  ('queue_inter_send_delay_ms', '1500');
 `
 
 const VALID_SETTINGS_KEYS = new Set([
@@ -152,7 +157,12 @@ const VALID_SETTINGS_KEYS = new Set([
   'open_at_login',
   'max_retries',
   'theme',
-  'enable_group_scheduling'
+  'enable_group_scheduling',
+  'pause_during_calls',
+  'call_max_wait_ms',
+  'call_poll_interval_ms',
+  'enable_send_queue',
+  'queue_inter_send_delay_ms'
 ])
 
 // Map a DB row (snake_case) to a Schedule (camelCase)
@@ -508,7 +518,12 @@ export function getSettings(): AppSettings {
     openAtLogin: map.open_at_login === '1',
     maxRetries: parseInt(map.max_retries || '3', 10),
     theme: (map.theme as 'system' | 'light' | 'dark') || 'system',
-    enableGroupScheduling: map.enable_group_scheduling === '1'
+    enableGroupScheduling: map.enable_group_scheduling === '1',
+    pauseDuringCalls: map.pause_during_calls !== '0',
+    callMaxWaitMs: parseInt(map.call_max_wait_ms || '1800000', 10),
+    callPollIntervalMs: parseInt(map.call_poll_interval_ms || '60000', 10),
+    enableSendQueue: map.enable_send_queue !== '0',
+    queueInterSendDelayMs: parseInt(map.queue_inter_send_delay_ms || '1500', 10)
   }
   return settingsCache
 }

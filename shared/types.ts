@@ -70,12 +70,25 @@ export interface AppSettings {
   maxRetries: number
   theme: ThemePreference
   enableGroupScheduling: boolean
+  // Smart scheduling
+  pauseDuringCalls: boolean       // hold sends while user is on a call
+  callMaxWaitMs: number           // max time to wait for a call to end before giving up (ms)
+  callPollIntervalMs: number      // how often to recheck call state (ms)
+  enableSendQueue: boolean        // serialize simultaneous sends (groups first, then contacts)
+  queueInterSendDelayMs: number   // gap between queued sends (ms)
 }
 
 export interface SendResult {
   success: boolean
   error?: string
   dryRun: boolean
+}
+
+/** Options for the WhatsApp send functions. */
+export interface SendOptions {
+  dryRun: boolean
+  /** When true, skip the Cmd+W close keystroke so the next queued send can reuse the session. */
+  keepOpen?: boolean
 }
 
 export interface AccessibilityStatus {
