@@ -2,6 +2,7 @@ import { ipcMain, app } from 'electron'
 import { exec } from 'child_process'
 import * as db from '../services/db.service'
 import { checkAccessibility, openAccessibilitySettings } from '../services/whatsapp.service'
+import { probeCallState } from '../utils/system-state'
 import { createLogger } from '../utils/logger'
 
 const log = createLogger('ipc:settings')
@@ -62,6 +63,15 @@ export function registerSettingsHandlers(): void {
 
   ipcMain.handle('system:openAccessibilityPrefs', async () => {
     return openAccessibilitySettings()
+  })
+
+  ipcMain.handle('system:probeCallState', async () => {
+    try {
+      return await probeCallState()
+    } catch (err) {
+      log.error('probeCallState failed', err)
+      throw err
+    }
   })
 
   ipcMain.handle('app:rebuild', () => {

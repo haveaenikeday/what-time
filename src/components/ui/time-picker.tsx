@@ -1,4 +1,4 @@
-import { useRef, useCallback, useMemo } from 'react'
+import { useRef, useEffect, useMemo } from 'react'
 import { cn } from '@/lib/utils'
 
 interface TimePickerProps {
@@ -54,20 +54,29 @@ function DrumColumn({
   width?: string
 }) {
   const lastWheelTime = useRef(0)
+  const containerRef = useRef<HTMLDivElement>(null)
 
-  const handleWheel = useCallback(
-    (e: React.WheelEvent) => {
+  // Attach the wheel listener manually with { passive: false } so we can call
+  // preventDefault() to stop the surrounding dialog from scrolling while the
+  // user wheels the drum. React's onWheel prop is registered as passive by
+  // default in modern Chromium and emits a console-spamming warning on every
+  // tick if preventDefault is called.
+  useEffect(() => {
+    const el = containerRef.current
+    if (!el) return
+    const handleWheel = (e: WheelEvent) => {
       e.preventDefault()
       const now = Date.now()
-      if (now - lastWheelTime.current < 60) return // throttle
+      if (now - lastWheelTime.current < 60) return
       lastWheelTime.current = now
 
       const direction = e.deltaY > 0 ? 1 : -1
       const next = Math.max(0, Math.min(items.length - 1, selectedIndex + direction))
       if (next !== selectedIndex) onSelect(next)
-    },
-    [items.length, selectedIndex, onSelect]
-  )
+    }
+    el.addEventListener('wheel', handleWheel, { passive: false })
+    return () => el.removeEventListener('wheel', handleWheel)
+  }, [items.length, selectedIndex, onSelect])
 
   // Compute visible range centered on selected
   const visibleItems = useMemo(() => {
@@ -84,9 +93,9 @@ function DrumColumn({
 
   return (
     <div
+      ref={containerRef}
       className={cn('relative overflow-hidden', width || 'flex-1')}
       style={{ height: DRUM_RADIUS * 2 + ITEM_HEIGHT, perspective: '200px' }}
-      onWheel={handleWheel}
     >
       {/* Selection band */}
       <div

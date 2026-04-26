@@ -21,6 +21,7 @@ const api: ElectronAPI = {
 
   checkAccessibility: () => ipcRenderer.invoke('system:checkAccessibility'),
   openAccessibilitySettings: () => ipcRenderer.invoke('system:openAccessibilityPrefs'),
+  probeCallState: () => ipcRenderer.invoke('system:probeCallState'),
 
   rebuildApp: () => ipcRenderer.invoke('app:rebuild'),
 

@@ -7,6 +7,9 @@ const log = createLogger('sendQueue')
  * `priority: 0` = group (runs first), `priority: 1` = contact.
  * Ties are broken by `scheduledTime` ASC (older fires first) so the user's
  * intended ordering is preserved for same-priority items.
+ *
+ * `enqueuedAt` is stamped on insert and used to log time-spent-in-queue when
+ * the item is dequeued — helps detect drain stalls.
  */
 export interface QueueItem {
   scheduleId: string
@@ -14,6 +17,7 @@ export interface QueueItem {
   scheduledTime: string
   retryAttempt: number
   retryOf?: string
+  enqueuedAt?: number
 }
 
 /**
@@ -70,9 +74,10 @@ export function enqueueSend(item: QueueItem): boolean {
     log.warn(`enqueueSend: ${item.scheduleId} already queued/in-flight — skipping`)
     return false
   }
-  queue.push(item)
+  const stamped: QueueItem = { ...item, enqueuedAt: item.enqueuedAt ?? Date.now() }
+  queue.push(stamped)
   sortQueue()
-  log.info(`enqueued ${item.scheduleId} (priority=${item.priority}, depth=${queue.length})`)
+  log.info(`enqueued ${item.scheduleId} (priority=${item.priority}, depth=${queue.length}, retryAttempt=${item.retryAttempt})`)
   return true
 }
 
@@ -99,7 +104,10 @@ export function clearQueue(): void {
  * so intermediate sends skip Cmd+W and the final send closes the window.
  */
 export async function processNextInQueue(): Promise<void> {
-  if (processing) return
+  if (processing) {
+    log.info(`processNextInQueue: already processing — no-op (depth=${queue.length})`)
+    return
+  }
   if (!executor) {
     log.error('processNextInQueue called before setExecutor — queue will not drain')
     return
@@ -107,22 +115,29 @@ export async function processNextInQueue(): Promise<void> {
   if (queue.length === 0) return
 
   processing = true
+  log.info(`processNextInQueue: starting drain (depth=${queue.length})`)
   try {
     while (queue.length > 0) {
       const item = queue.shift()!
       inFlightId = item.scheduleId
       const keepOpen = queue.length > 0
+      const waitMs = item.enqueuedAt ? Date.now() - item.enqueuedAt : -1
 
+      log.info(`dequeue ${item.scheduleId} (priority=${item.priority}, waitedMs=${waitMs}, keepOpen=${keepOpen}, remaining=${queue.length})`)
+
+      const startedAt = Date.now()
       try {
         await executor(item, keepOpen)
+        log.info(`executor completed for ${item.scheduleId} (durationMs=${Date.now() - startedAt})`)
       } catch (err) {
         // Executor should catch its own errors and log a run_log — but defensively
         // don't let a throw stop the queue.
-        log.error(`executor threw for ${item.scheduleId}`, err)
+        log.error(`executor threw for ${item.scheduleId} (durationMs=${Date.now() - startedAt})`, err)
       } finally {
         inFlightId = null
       }
     }
+    log.info('processNextInQueue: drain complete')
   } finally {
     processing = false
   }

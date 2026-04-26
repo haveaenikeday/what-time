@@ -117,9 +117,30 @@ export function registerScheduleHandlers(): void {
   })
 
   ipcMain.handle('schedule:testSend', async (_, id: string) => {
+    log.info(`testSend invoked: id=${id}`)
     try {
+      // Verify the schedule actually exists before delegating, so the
+      // "Schedule not found" message is only ever surfaced when it's true.
+      // Without this check, any legitimate `null` return from
+      // `testSendSchedule` (e.g. mutex held by an in-flight scheduled run)
+      // would be reported as "Schedule not found", misleading the user.
+      const exists = db.getScheduleById(id)
+      if (!exists) {
+        log.warn(`testSend: schedule ${id} does not exist`)
+        return { success: false, error: 'Schedule not found', dryRun: false }
+      }
+
       const result = await testSendSchedule(id)
-      if (!result) return { success: false, error: 'Schedule not found', dryRun: false }
+      if (!result) {
+        log.warn(`testSend: ${id} returned null despite existing — likely mutex held by in-flight execution`)
+        return {
+          success: false,
+          error: 'Send is already in progress for this schedule — check the Logs tab',
+          dryRun: false
+        }
+      }
+
+      log.info(`testSend: ${id} → ${result.status}${result.errorMessage ? ` (${result.errorMessage})` : ''}`)
       return {
         success: result.status === 'success',
         error: result.errorMessage ?? undefined,

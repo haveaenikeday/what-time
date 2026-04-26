@@ -96,6 +96,17 @@ export interface AccessibilityStatus {
   error?: string
 }
 
+/** Diagnostic snapshot of the call-state probe — surfaced to Settings UI for verification. */
+export interface CallStateProbe {
+  inCall: boolean
+  reason?: string
+  detectedApp?: string
+  frontApp: string
+  runningCallApps: string[]
+  audioInUse: boolean
+  matchedWindowTitle?: string
+}
+
 // A single contact result from the macOS Contacts app
 export interface Contact {
   name: string
@@ -137,6 +148,7 @@ export interface ElectronAPI {
   // System
   checkAccessibility(): Promise<AccessibilityStatus>
   openAccessibilitySettings(): Promise<void>
+  probeCallState(): Promise<CallStateProbe>
 
   // Contacts (macOS Contacts app via AppleScript)
   searchContacts(query: string): Promise<Contact[]>

@@ -5,8 +5,16 @@ const log = createLogger('system-state')
 
 /**
  * Apps known to host calls/meetings. We only consider "in call" if one of these
- * is running AND a call signal is present (window title match or audio assertion).
- * Running alone is insufficient — Slack/Chrome/Discord are often open idle.
+ * is running AND a stronger signal is present (window-title match, or audio
+ * assertion AND the app is frontmost).
+ *
+ * NOTE: WhatsApp is intentionally NOT on this list. WhatsApp Desktop is the
+ * very app we're sending through, so it is always running during a send. If we
+ * treated its presence as a call signal, any system-wide audio-input
+ * assertion (Bluetooth headset mic, screen recorder, music app with mic
+ * permission) would silently block every send. WhatsApp voice/video calls are
+ * still detected via the window-title patterns below ("is calling",
+ * "Ongoing call", "Call with").
  */
 const CALL_APPS = [
   'FaceTime',
@@ -16,8 +24,7 @@ const CALL_APPS = [
   'Webex',
   'Google Chrome',
   'Slack',
-  'Discord',
-  'WhatsApp'
+  'Discord'
 ] as const
 
 /**
@@ -40,6 +47,14 @@ export interface CallState {
   inCall: boolean
   reason?: string
   detectedApp?: string
+}
+
+/** Full diagnostic view of the call-state probe — surfaced to the UI for debugging. */
+export interface CallStateProbe extends CallState {
+  frontApp: string
+  runningCallApps: string[]
+  audioInUse: boolean
+  matchedWindowTitle?: string
 }
 
 interface ProbeResult {
@@ -143,33 +158,74 @@ export function parsePmsetAudioInUse(output: string): boolean {
  * Fail-open policy: any probe error → `{ inCall: false }` so scheduled sends
  * are never starved because detection itself broke.
  *
- * Decision rule:
- *   inCall = (a call app has a call-window title) OR
- *            (a call app is running AND pmset reports audio-in active)
+ * Decision rule (tightened to reduce false positives):
+ *   inCall = (a CALL_APP has a call-window title)
+ *         OR (the frontmost app is a CALL_APP AND pmset reports audio-in active)
+ *
+ * Audio-in-use alone is too noisy (Bluetooth mics, screen recorders, browser
+ * tabs with mic permission, music apps). We only treat it as a call signal
+ * when the user is *actively interacting with* a call-capable app.
  */
 export async function isSystemInCall(): Promise<CallState> {
+  const probe = await probeCallState()
+  return {
+    inCall: probe.inCall,
+    reason: probe.reason,
+    detectedApp: probe.detectedApp
+  }
+}
+
+/**
+ * Run the full call-state probe and return all collected signals.
+ * Used by `isSystemInCall` and exposed via IPC for the Settings "Test detection" button.
+ */
+export async function probeCallState(): Promise<CallStateProbe> {
   let probe: ProbeResult
   try {
     const raw = await runAppleScript(buildProbeScript(), 5000)
     probe = parseProbeOutput(raw)
   } catch (err) {
     log.warn('call-state probe failed — fail-open', err)
-    return { inCall: false }
-  }
-
-  if (probe.matchedWindow) {
     return {
-      inCall: true,
-      reason: `window title "${probe.matchedWindow.title}"`,
-      detectedApp: probe.matchedWindow.app
+      inCall: false,
+      frontApp: '',
+      runningCallApps: [],
+      audioInUse: false
     }
   }
 
-  if (probe.runningCallApps.length === 0) {
-    return { inCall: false }
+  // Window-title match is the strongest signal — short-circuit on it.
+  if (probe.matchedWindow) {
+    const result: CallStateProbe = {
+      inCall: true,
+      reason: `window title "${probe.matchedWindow.title}"`,
+      detectedApp: probe.matchedWindow.app,
+      frontApp: probe.frontApp,
+      runningCallApps: probe.runningCallApps,
+      audioInUse: false,
+      matchedWindowTitle: probe.matchedWindow.title
+    }
+    log.info('probe verdict: in-call (window title match)', {
+      frontApp: result.frontApp,
+      runningCallApps: result.runningCallApps,
+      detectedApp: result.detectedApp,
+      title: result.matchedWindowTitle
+    })
+    return result
   }
 
-  // Second probe: audio-in assertion. Only meaningful if a call-capable app is running.
+  if (probe.runningCallApps.length === 0) {
+    log.info('probe verdict: clear (no call apps running)', { frontApp: probe.frontApp })
+    return {
+      inCall: false,
+      frontApp: probe.frontApp,
+      runningCallApps: probe.runningCallApps,
+      audioInUse: false
+    }
+  }
+
+  // Second probe: audio-in assertion. Only meaningful if a call-capable app
+  // is BOTH running AND frontmost — we don't block on background audio.
   let audioInUse = false
   try {
     const out = await runCommand('pmset', ['-g', 'assertions'], 5000)
@@ -178,13 +234,35 @@ export async function isSystemInCall(): Promise<CallState> {
     log.warn('pmset probe failed — ignoring audio signal', err)
   }
 
-  if (audioInUse) {
-    return {
+  const frontIsCallApp = probe.runningCallApps.includes(probe.frontApp)
+
+  if (audioInUse && frontIsCallApp) {
+    const result: CallStateProbe = {
       inCall: true,
       reason: 'audio input active',
-      detectedApp: probe.frontApp || probe.runningCallApps[0]
+      detectedApp: probe.frontApp,
+      frontApp: probe.frontApp,
+      runningCallApps: probe.runningCallApps,
+      audioInUse: true
     }
+    log.info('probe verdict: in-call (audio + call app frontmost)', {
+      frontApp: result.frontApp,
+      runningCallApps: result.runningCallApps
+    })
+    return result
   }
 
-  return { inCall: false }
+  log.info('probe verdict: clear', {
+    frontApp: probe.frontApp,
+    runningCallApps: probe.runningCallApps,
+    audioInUse,
+    frontIsCallApp,
+    note: !frontIsCallApp && audioInUse ? 'audio-in active but front app is not a call app — ignoring' : undefined
+  })
+  return {
+    inCall: false,
+    frontApp: probe.frontApp,
+    runningCallApps: probe.runningCallApps,
+    audioInUse
+  }
 }

@@ -551,8 +551,17 @@ async function executeJob(
   retryAttempt = 0,
   retryOf?: string,
   existingScheduledTime?: string,
-  bypassCallCheck = false
+  bypassCallCheck = false,
+  bypassQueue = false
 ): Promise<RunLog | null> {
+  log.info(`executeJob entry: ${scheduleId}`, {
+    retryAttempt,
+    retryOf,
+    bypassCallCheck,
+    bypassQueue,
+    mutexHeld: executing.has(scheduleId)
+  })
+
   // Mutex: skip if already executing this schedule
   if (executing.has(scheduleId)) {
     log.warn(`Schedule ${scheduleId} is already executing, skipping duplicate`)
@@ -562,12 +571,16 @@ async function executeJob(
   executing.add(scheduleId)
   try {
     const s = getScheduleById(scheduleId)
-    if (!s) return null
+    if (!s) {
+      log.warn(`Schedule ${scheduleId} not found in DB — dropping`)
+      return null
+    }
 
     const scheduledTime = existingScheduledTime || new Date().toISOString()
     const settings = getSettings()
 
     if (!s.enabled) {
+      log.info(`Gate: ${scheduleId} disabled — writing skipped log`)
       const entry = enrichRunLog(insertRunLog(scheduleId, 'skipped', 'Schedule is disabled', undefined, scheduledTime), s)
       if (onExecutedCallback) onExecutedCallback(entry)
       return entry
@@ -578,9 +591,10 @@ async function executeJob(
     try {
       const result = await runAppleScript('tell application "System Events" to return running of screen saver preferences', 5000)
       screenLocked = result.trim() === 'true'
-    } catch {
-      // If we can't check, proceed anyway
+    } catch (err) {
+      log.warn(`Gate: screen-lock probe failed for ${scheduleId} — proceeding`, err)
     }
+    log.info(`Gate: ${scheduleId} screenLocked=${screenLocked}`)
 
     if (screenLocked) {
       const entry = enrichRunLog(insertRunLog(scheduleId, 'skipped', 'Screen locked: cannot send via AppleScript', undefined, scheduledTime, retryAttempt, retryOf), s)
@@ -592,16 +606,26 @@ async function executeJob(
     // Call-aware hold: if the user is on a call, postpone and re-check later.
     // `bypassCallCheck` is true for manual test-sends — the user clicked Send,
     // they want immediate feedback even if it fails.
+    log.info(`Gate: ${scheduleId} pauseDuringCalls=${settings.pauseDuringCalls} bypassCallCheck=${bypassCallCheck}`)
     if (settings.pauseDuringCalls && !bypassCallCheck) {
       const existing = pendingCallWaits.get(scheduleId)
       const firstDetectedAt = existing?.firstDetectedAt ?? Date.now()
+      const isFirstHold = existing === undefined
       const callState = await isSystemInCall()
+      log.info(`Gate: ${scheduleId} call probe`, {
+        inCall: callState.inCall,
+        reason: callState.reason,
+        detectedApp: callState.detectedApp,
+        isFirstHold,
+        heldForMs: Date.now() - firstDetectedAt
+      })
       if (callState.inCall) {
         const heldForMs = Date.now() - firstDetectedAt
         if (heldForMs >= settings.callMaxWaitMs) {
           // Give up after the configured ceiling.
           pendingCallWaits.delete(scheduleId)
           const mins = Math.round(settings.callMaxWaitMs / 60000)
+          log.warn(`Schedule ${scheduleId}: gave up after ${mins}m of call holds`)
           const entry = enrichRunLog(
             insertRunLog(scheduleId, 'skipped', `Gave up: still in call after ${mins}m`, undefined, scheduledTime, retryAttempt, retryOf),
             s
@@ -610,34 +634,86 @@ async function executeJob(
           if (onExecutedCallback) onExecutedCallback(entry)
           return entry
         }
-        // Still in call — log silently (no run_log), schedule another recheck.
-        log.info(`Schedule ${scheduleId} held: call in progress (${callState.reason ?? 'detected'}) — rechecking in ${settings.callPollIntervalMs}ms`)
+        // First hold for this run: write a visible run_log so the user sees it
+        // in the Logs UI immediately. Subsequent rechecks stay silent to avoid
+        // flooding the log on long calls.
+        if (isFirstHold) {
+          const pollSec = Math.round(settings.callPollIntervalMs / 1000)
+          const reason = callState.reason ?? 'detected'
+          const detectedApp = callState.detectedApp ? ` [${callState.detectedApp}]` : ''
+          const entry = enrichRunLog(
+            insertRunLog(
+              scheduleId,
+              'skipped',
+              `Held: call in progress (${reason})${detectedApp} — rechecking every ${pollSec}s`,
+              undefined,
+              scheduledTime,
+              retryAttempt,
+              retryOf
+            ),
+            s
+          )
+          if (onExecutedCallback) onExecutedCallback(entry)
+        }
+        log.info(`Schedule ${scheduleId} held: call in progress (${callState.reason ?? 'detected'}) — rechecking in ${settings.callPollIntervalMs}ms (held for ${heldForMs}ms total)`)
         scheduleCallRecheck(scheduleId, retryAttempt, retryOf, scheduledTime, firstDetectedAt)
         return null
       }
-      // Call ended (or never was) — clear any stale wait entry.
-      if (existing) pendingCallWaits.delete(scheduleId)
+      // Call ended (or never was) — clear any stale wait entry. If we had been
+      // holding this schedule, log the resume event so the user can correlate
+      // with the earlier "Held: call in progress" entry.
+      if (existing) {
+        pendingCallWaits.delete(scheduleId)
+        const heldForMs = Date.now() - existing.firstDetectedAt
+        const heldSec = Math.round(heldForMs / 1000)
+        log.info(`Schedule ${scheduleId}: call cleared after ${heldForMs}ms — resuming send`)
+        const entry = enrichRunLog(
+          insertRunLog(
+            scheduleId,
+            'skipped',
+            `Resumed after ${heldSec}s call hold — proceeding with send`,
+            undefined,
+            scheduledTime,
+            retryAttempt,
+            retryOf
+          ),
+          s
+        )
+        if (onExecutedCallback) onExecutedCallback(entry)
+      }
     }
 
     // Route through the queue so same-minute schedules serialize correctly
     // (groups first, contacts after) and chained sends reuse the WhatsApp session.
     // `processNextInQueue` is guarded by its own `processing` flag — calling it
     // concurrently from multiple executeJob paths is safe (second call no-ops).
-    if (settings.enableSendQueue) {
+    //
+    // `bypassQueue=true` skips the queue and runs inline: required for manual
+    // `testSendSchedule` triggers where the caller is awaiting a real RunLog
+    // result — enqueueing would force the IPC layer to interpret a `null`
+    // synchronous return as failure.
+    log.info(`Gate: ${scheduleId} enableSendQueue=${settings.enableSendQueue} bypassQueue=${bypassQueue}`)
+    if (settings.enableSendQueue && !bypassQueue) {
+      const priority: 0 | 1 = s.recipientType === 'group' ? 0 : 1
       const enqueued = enqueueSend({
         scheduleId,
-        priority: s.recipientType === 'group' ? 0 : 1,
+        priority,
         scheduledTime,
         retryAttempt,
         retryOf
       })
+      log.info(`Routing ${scheduleId} via queue: priority=${priority} enqueued=${enqueued}`)
       if (enqueued) {
         processNextInQueue().catch((err) => log.error('queue drain failed', err))
       }
       return null
     }
 
-    // Legacy direct-send path (queue disabled via setting).
+    // Direct-send path: either the queue is disabled, or the caller bypassed it
+    // (manual test send) to get a synchronous RunLog back.
+    log.info(
+      `Routing ${scheduleId} via direct send (${bypassQueue ? 'bypassQueue from testSendSchedule' : 'queue disabled'})`
+    )
     return await performSend(s, retryAttempt, retryOf, scheduledTime, false)
   } finally {
     executing.delete(scheduleId)
@@ -652,7 +728,11 @@ async function executeJob(
 export async function testSendSchedule(scheduleId: string): Promise<RunLog | null> {
   clearPendingRetry(scheduleId)
   clearPendingCallWait(scheduleId)
-  return executeJob(scheduleId, 0, undefined, undefined, true)
+  // Bypass the call-in-progress check AND the send queue — the user clicked
+  // Send and is awaiting synchronous feedback. The queue is for serializing
+  // scheduled cron triggers; routing a manual test through it returns null
+  // from executeJob and the IPC layer would surface a misleading error.
+  return executeJob(scheduleId, 0, undefined, undefined, /* bypassCallCheck */ true, /* bypassQueue */ true)
 }
 
 /**

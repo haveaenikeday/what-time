@@ -7,8 +7,8 @@ import { Switch } from '@/components/ui/switch'
 import { Badge } from '@/components/ui/badge'
 import { api } from '@/lib/ipc'
 import { Select } from '@/components/ui/select'
-import { ShieldCheck, ShieldAlert, AlertTriangle, BookUser, Sun, Moon, Monitor, RefreshCw } from 'lucide-react'
-import type { AccessibilityStatus } from '../../shared/types'
+import { ShieldCheck, ShieldAlert, AlertTriangle, BookUser, Sun, Moon, Monitor, RefreshCw, Activity } from 'lucide-react'
+import type { AccessibilityStatus, CallStateProbe } from '../../shared/types'
 
 /** Debounced text input that only persists after the user stops typing. */
 function DebouncedInput({
@@ -48,6 +48,9 @@ export function Settings() {
   const [checkingContacts, setCheckingContacts] = useState(false)
   const [buildStatus, setBuildStatus] = useState<'idle' | 'building' | 'error'>('idle')
   const [buildError, setBuildError] = useState('')
+  const [callProbe, setCallProbe] = useState<CallStateProbe | null>(null)
+  const [probingCall, setProbingCall] = useState(false)
+  const [callProbeError, setCallProbeError] = useState<string | null>(null)
 
   useEffect(() => {
     checkAccess()
@@ -75,6 +78,20 @@ export function Settings() {
       setContacts({ granted: false, error: 'Check failed' })
     } finally {
       setCheckingContacts(false)
+    }
+  }
+
+  async function runCallProbe() {
+    setProbingCall(true)
+    setCallProbeError(null)
+    try {
+      const probe = await api.probeCallState()
+      setCallProbe(probe)
+    } catch (err) {
+      setCallProbeError(err instanceof Error ? err.message : 'Probe failed')
+      setCallProbe(null)
+    } finally {
+      setProbingCall(false)
     }
   }
 
@@ -376,6 +393,41 @@ export function Settings() {
             className="w-24"
             disabled={!settings.pauseDuringCalls}
           />
+        </div>
+
+        {/* Test call detection */}
+        <div className="space-y-2 pl-12 pt-2 border-t">
+          <Label>Test call detection</Label>
+          <p className="text-xs text-muted-foreground">
+            Run the call-state probe right now and see what it would decide. Useful when sends are being held unexpectedly.
+          </p>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={runCallProbe}
+            disabled={probingCall || !settings.pauseDuringCalls}
+          >
+            <Activity className={`h-4 w-4 mr-2 ${probingCall ? 'animate-pulse' : ''}`} />
+            {probingCall ? 'Probing...' : 'Run probe'}
+          </Button>
+          {callProbeError && (
+            <p className="text-xs text-red-600 dark:text-red-400 font-mono">{callProbeError}</p>
+          )}
+          {callProbe && (
+            <div className="text-xs space-y-1 rounded border bg-muted/40 p-2 font-mono">
+              <div>
+                <Badge variant={callProbe.inCall ? 'warning' : 'success'}>
+                  {callProbe.inCall ? 'In call (sends would be held)' : 'Clear (sends would proceed)'}
+                </Badge>
+              </div>
+              {callProbe.reason && <div>reason: {callProbe.reason}</div>}
+              {callProbe.detectedApp && <div>detectedApp: {callProbe.detectedApp}</div>}
+              {callProbe.matchedWindowTitle && <div>window: "{callProbe.matchedWindowTitle}"</div>}
+              <div>frontApp: {callProbe.frontApp || '(none)'}</div>
+              <div>runningCallApps: [{callProbe.runningCallApps.join(', ') || '(none)'}]</div>
+              <div>audioInUse: {String(callProbe.audioInUse)}</div>
+            </div>
+          )}
         </div>
 
         {/* Enable queue */}

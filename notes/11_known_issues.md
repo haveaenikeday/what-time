@@ -4,7 +4,7 @@
 Track current risks/defects prioritized by severity using repository evidence.
 
 ## Status
-Last updated: 2026-03-30
+Last updated: 2026-04-25
 
 ## Critical
 
@@ -30,12 +30,42 @@ Last updated: 2026-03-30
 - Backend `testSend` handler now converts `RunLog` to `SendResult` format at the IPC boundary.
 - Frontend receives `{ success, error?, dryRun }` as expected.
 
-### 11) Group messaging: search bar targeting was broken
-- **Status:** FIXED (commits c1c1c84, b768721)
-- Original code used `Cmd+F` which opened WhatsApp's in-chat message search, not the sidebar search.
-- Group name was typed into the wrong field — navigation to the group never happened.
-- Fix: added double-Escape reset phase (Phase 1) to clear stale dialogs, then uses `Cmd+F` to open sidebar search (Phase 2), arrow-down navigation to select result (Phase 4), and clipboard paste for message (Phase 5).
-- Current flow is 6 phases with structured per-phase logging for debugging.
+### 11) Group messaging: search bar targeting (simple macOS flow)
+- **Status:** Working — simple flow restored.
+- **The flow (macOS-only, what actually works on the user's machine):**
+  1. Activate WhatsApp + press Escape twice to dismiss any stale dialog.
+  2. `Cmd+F` to open WhatsApp's search bar.
+  3. Type the group name; wait for results to populate.
+  4. Down arrow ×2 + Enter to select and open the first result.
+  5. Paste the message via the clipboard (`Cmd+V` — handles emoji/unicode safely).
+  6. Press Enter to send (skipped on dry-run); optional `Cmd+W` to close.
+- **History (do not regress again):**
+  - A previous iteration tried to be cross-version-portable by adding a 3-tier AX-path → `Cmd+K` → `Cmd+F` fallback plus a defensive Cmd+A + Delete clear-field step plus `AXFocusedUIElement` diagnostic probes. This added latency and broke the working keystroke sequence on the user's environment. The over-engineering was reverted.
+  - The simple `Cmd+F` keystroke is what works on macOS WhatsApp Desktop — there is no need for AX paths or the `Cmd+K` global-search shortcut here.
+- **Diagnostics:** Each phase logs `[phase N]` so the dev console traces which step failed. This is intentional and should stay; it does not interfere with the keystroke sequence.
+
+### 14) "Test Send" toast always reported "Schedule not found"
+- **Status:** FIXED
+- **Symptom:** Clicking the "Test Send" button on any existing schedule produced the toast "Schedule not found", even when the schedule was clearly visible in the Dashboard.
+- **Root cause:** Commit `c00c35d` ("smart scheduling safeguards") introduced a serialized send queue and routed `executeJob` through it whenever `enable_send_queue=1` (the default). The queue is fire-and-forget, so when called from `testSendSchedule`, `executeJob` enqueued the send and **returned `null` synchronously**. The IPC handler at `electron/ipc/schedule.ipc.ts:122` then collapsed any `null` return into the literal string `'Schedule not found'`. The actual send still proceeded via the queue and wrote a real `run_log`, but the user only saw the misleading toast.
+- **Fixes:**
+  1. Added a `bypassQueue` parameter to `executeJob`. `testSendSchedule` now passes `bypassQueue=true` so the manual test path falls through to the inline `performSend(...)` call and returns a real `RunLog`. Scheduled cron triggers continue to use the queue exactly as before.
+  2. The IPC `schedule:testSend` handler now does a `db.getScheduleById(id)` existence check first. If the schedule truly doesn't exist → `'Schedule not found'`. If it exists but `testSendSchedule` still returned `null` (a real mutex/race) → `'Send is already in progress for this schedule — check the Logs tab'`.
+  3. Per-step IPC logging (`testSend invoked`, `does not exist`, `returned null`, `→ status`) so the dev console shows the exact reason for any future failure.
+- **Regression coverage:** `tests/scheduler-testsend.test.ts` locks both the source structure (`bypassQueue` parameter, queue branch gated on `!bypassQueue`, IPC existence check) and the runtime behavior (`testSendSchedule` returns a non-null `RunLog` with `enableSendQueue=true`; does not call `enqueueSend`; scheduled timer callbacks still take the queue path).
+
+### 13) Smart-scheduling call-aware hold: false positives blocked all sends
+- **Status:** FIXED
+- **Symptom:** After commit c00c35d ("smart scheduling safeguards") shipped, group sends started silently failing in normal use. Holds were invisible in the Logs UI for up to `callMaxWaitMs` (default 30 min).
+- **Root causes (compounding):**
+  1. `WhatsApp` was on the `CALL_APPS` list. WhatsApp Desktop is the very app we send through, so it is *always* running during a send. Combined with system-wide `pmset cnt_audio_in_use > 0` (Bluetooth headset mic, Voice Memos, browser tab with mic permission, etc.), this produced `inCall: true` for every send.
+  2. `pmset` audio-in detection had no app correlation — any system audio-input assertion satisfied the "audio active" condition.
+  3. The first call-hold path in `executeJob` only called `log.info`; no `run_log` row was inserted, so the user saw nothing in the Logs tab while sends sat held.
+- **Fixes:**
+  1. Removed `WhatsApp` from `CALL_APPS`. WhatsApp voice/video calls are still detected via the `CALL_WINDOW_PATTERNS` list (`"is calling"`, `"Ongoing call"`, `"Call with"`).
+  2. Tightened `inCall` rule: `inCall = matchedWindow != null OR (audioInUse AND frontApp ∈ runningCallApps)`. Audio-in alone with a non-call front app no longer fires.
+  3. `executeJob` writes a `skipped` `run_log` row on the first call-hold ("Held: call in progress …") and another when the hold resolves ("Resumed after Xs call hold") so the lifecycle is visible immediately.
+  4. Added a "Test call detection" button in Settings (Smart Scheduling section) that calls `system:probeCallState` and surfaces the full diagnostic payload (verdict, reason, frontApp, runningCallApps, audioInUse).
 
 ### 12) Group messaging: inherent UI automation fragility
 - **Status:** Known limitation (inherent to AppleScript approach)

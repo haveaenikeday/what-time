@@ -5,15 +5,40 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 // ---------------------------------------------------------------------------
 
 describe('whatsapp.service group send — source checks', () => {
-  it('uses Cmd+F (not Cmd+K) to open WhatsApp search', async () => {
+  it('uses the simple macOS sequence: Escape×2 → Cmd+F → type → Down×2 + Enter → paste → Enter', async () => {
     const { readFileSync } = await import('fs')
     const { join } = await import('path')
     const src = readFileSync(
       join(process.cwd(), 'electron/services/whatsapp.service.ts'),
       'utf8'
     )
+    // Phase 1: Escape (key code 53) twice to clear stale state.
+    expect(src).toContain('key code 53')
+    // Phase 2: Cmd+F opens WhatsApp's search.
     expect(src).toContain('keystroke "f" using command down')
+    // Phase 4: Down arrow (key code 125) twice to select first result.
+    expect(src).toContain('key code 125')
+    // Phase 5: Cmd+V pastes the message (handles emoji/unicode safely).
+    expect(src).toContain('keystroke "v" using command down')
+  })
+
+  it('does NOT carry the over-engineered AX/Cmd+K fallback machinery', async () => {
+    const { readFileSync } = await import('fs')
+    const { join } = await import('path')
+    const src = readFileSync(
+      join(process.cwd(), 'electron/services/whatsapp.service.ts'),
+      'utf8'
+    )
+    // The 3-tier AX → Cmd+K → Cmd+F fallback was removed in favor of the
+    // simple Cmd+F flow the user verified works on macOS. Lock the cleanup in.
+    expect(src).not.toContain('AXFocusedUIElement')
+    expect(src).not.toContain('focusSidebarSearch')
+    expect(src).not.toContain('probeFocusedElement')
     expect(src).not.toContain('keystroke "k" using command down')
+    // Defensive clear-field (Cmd+A + Delete) was also removed — relies on
+    // Phase 1 Escape×2 to land in a clean search state.
+    expect(src).not.toContain('keystroke "a" using command down')
+    expect(src).not.toMatch(/\bkey code 51\b/)
   })
 
   it('includes [phase N] log labels for all six phases', async () => {
@@ -123,11 +148,12 @@ describe('sendWhatsAppGroupMessage', () => {
     expect(result).toEqual({ success: true, dryRun: false })
   })
 
-  it('returns success:false with error message when AppleScript throws', async () => {
+  it('returns success:false with error message when every AppleScript call fails', async () => {
+    // Simulates a denied Automation permission: every osascript invocation
+    // rejects. The simple Cmd+F flow has no fallback, so the very first
+    // failing keystroke propagates the error up to the outer try/catch.
     vi.doMock('../electron/utils/applescript', () => ({
-      runAppleScript: vi.fn()
-        .mockResolvedValueOnce('') // phase 1 reset — ok
-        .mockRejectedValueOnce(new Error('Automation permission not granted')), // phase 2 search — fails
+      runAppleScript: vi.fn().mockRejectedValue(new Error('Automation permission not granted')),
       runCommand: vi.fn().mockResolvedValue('')
     }))
     vi.doMock('../electron/services/db.service', () => ({
