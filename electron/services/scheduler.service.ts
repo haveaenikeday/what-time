@@ -1,8 +1,7 @@
 import * as schedule from 'node-schedule'
 import { getAllSchedules, getScheduleById, getSettings, insertRunLog, toggleSchedule, updateLastFiredAt } from './db.service'
 import { sendWhatsAppMessage, sendWhatsAppGroupMessage } from './whatsapp.service'
-import { runAppleScript } from '../utils/applescript'
-import { isSystemInCall } from '../utils/system-state'
+import { isSystemInCall, probeUserSessionState } from '../utils/system-state'
 import {
   clearQueue,
   enqueueSend,
@@ -11,7 +10,7 @@ import {
   type QueueItem
 } from './sendQueue'
 import { createLogger } from '../utils/logger'
-import type { Schedule, RunLog } from '../../shared/types'
+import type { Schedule, RunLog, RecipientType } from '../../shared/types'
 
 const log = createLogger('scheduler')
 
@@ -29,6 +28,10 @@ function enrichRunLog(entry: RunLog, s: Schedule): RunLog {
 function parseTimeOfDay(t: string): { hours: number; minutes: number } {
   const [hours, minutes] = t.split(':').map(Number)
   return { hours, minutes }
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
 // In-memory map of active node-schedule jobs
@@ -55,11 +58,35 @@ interface CallWait {
 }
 const pendingCallWaits = new Map<string, CallWait>()
 
+// Schedules held while macOS is locked, waking, or on the login window.
+interface SessionWait {
+  firstHeldAt: number
+  retryAttempt: number
+  retryOf?: string
+  scheduledTime: string
+  reason: string
+}
+const pendingSessionWaits = new Map<string, SessionWait>()
+
 // Callback for notifying the renderer when a job executes
 let onExecutedCallback: ((log: RunLog) => void) | null = null
 
+export interface BeforeAutomationInfo {
+  scheduleId: string
+  recipientType: RecipientType
+  recipient: string
+  messagePreview: string
+  startsInMs: number
+}
+
+// Callback for warning the user shortly before automatic UI automation starts.
+let onBeforeAutomationCallback: ((info: BeforeAutomationInfo) => void) | null = null
+
 // Retry backoff intervals in ms (indexed by attempt number: 0→10s, 1→30s, 2→90s)
 const RETRY_BACKOFF_MS = [10_000, 30_000, 90_000]
+
+const BEFORE_AUTOMATION_WARNING_MS = 5_000
+const SESSION_RECHECK_MS = 30_000
 
 // Grace delay before catch-up fires for group messages (gives user time after app launch)
 const GROUP_CATCH_UP_DELAY_MS = 5_000
@@ -72,11 +99,82 @@ const NON_RETRYABLE_PATTERNS = [
   'not allowed assistive access',
   'Accessibility permission',
   'Screen locked',
-  'Screen saver is running'
+  'Screen saver is running',
+  'loginwindow is frontmost'
 ]
 
 export function setOnExecutedCallback(cb: (log: RunLog) => void): void {
   onExecutedCallback = cb
+}
+
+export function setOnBeforeAutomationCallback(cb: (info: BeforeAutomationInfo) => void): void {
+  onBeforeAutomationCallback = cb
+}
+
+let runtimeUserSessionBlockReason: string | null = null
+let pendingSessionRecheck: NodeJS.Timeout | null = null
+
+export function markUserSessionBlocked(reason: string): void {
+  runtimeUserSessionBlockReason = reason
+  log.info(`User session blocked automatic sends: ${reason}`)
+}
+
+export function markUserSessionReady(source: string): void {
+  if (runtimeUserSessionBlockReason) {
+    log.info(`User session ready (${source}) — clearing block: ${runtimeUserSessionBlockReason}`)
+  } else {
+    log.info(`User session ready (${source})`)
+  }
+  runtimeUserSessionBlockReason = null
+  clearSessionRecheck()
+  resumeHeldSessionSends(source)
+}
+
+export async function checkAndResumeHeldSessionSends(source: string): Promise<void> {
+  const session = await probeUserSessionState()
+  if (session.ready) {
+    markUserSessionReady(source)
+    return
+  }
+  markUserSessionBlocked(session.reason ?? 'User session is not ready')
+  scheduleSessionRecheck(source)
+}
+
+function clearSessionRecheck(): void {
+  if (!pendingSessionRecheck) return
+  clearTimeout(pendingSessionRecheck)
+  pendingSessionRecheck = null
+}
+
+function scheduleSessionRecheck(source: string): void {
+  if (pendingSessionWaits.size === 0 || pendingSessionRecheck) return
+
+  pendingSessionRecheck = setTimeout(() => {
+    pendingSessionRecheck = null
+    checkAndResumeHeldSessionSends(`${source} recheck`).catch((err) => {
+      log.warn('Session readiness recheck failed', err)
+    })
+  }, SESSION_RECHECK_MS)
+}
+
+function resumeHeldSessionSends(source: string): void {
+  if (pendingSessionWaits.size === 0) return
+
+  const waits = Array.from(pendingSessionWaits.entries())
+  pendingSessionWaits.clear()
+  log.info(`Resuming ${waits.length} held send(s) after ${source}`)
+
+  for (const [scheduleId, wait] of waits) {
+    executeJob(scheduleId, wait.retryAttempt, wait.retryOf, wait.scheduledTime).catch((err) => {
+      log.error(`Session-held send failed to resume for ${scheduleId}`, err)
+    })
+  }
+}
+
+function recipientForSchedule(s: Schedule): string {
+  return s.recipientType === 'group'
+    ? s.groupName
+    : (s.contactName || s.phoneNumber || 'Unknown')
 }
 
 /**
@@ -339,7 +437,7 @@ export function registerJob(s: Schedule): void {
 /**
  * Cancel and remove a job from the in-memory map.
  * Also clears any pending retry for this schedule.
- * Note: pending call-waits and queue entries intentionally survive — they're
+ * Note: pending call-waits, session-waits, and queue entries intentionally survive — they're
  * self-cleaning (their handlers re-read the schedule and no-op if missing/disabled)
  * which preserves held sends across sleep/wake cycles.
  */
@@ -433,6 +531,89 @@ function clearPendingCallWait(scheduleId: string): void {
   }
 }
 
+function clearPendingSessionWait(scheduleId: string): void {
+  pendingSessionWaits.delete(scheduleId)
+}
+
+async function getUserSessionHoldReason(): Promise<string | null> {
+  if (runtimeUserSessionBlockReason) return runtimeUserSessionBlockReason
+
+  const session = await probeUserSessionState()
+  if (session.ready) return null
+  return session.reason ?? 'User session is not ready'
+}
+
+function holdForUserSession(
+  s: Schedule,
+  retryAttempt: number,
+  retryOf: string | undefined,
+  scheduledTime: string,
+  reason: string
+): void {
+  const existing = pendingSessionWaits.get(s.id)
+  pendingSessionWaits.set(s.id, {
+    firstHeldAt: existing?.firstHeldAt ?? Date.now(),
+    retryAttempt,
+    retryOf,
+    scheduledTime,
+    reason
+  })
+
+  if (existing) {
+    log.info(`Schedule ${s.id} remains held for user session: ${reason}`)
+    scheduleSessionRecheck('held send')
+    return
+  }
+
+  const entry = enrichRunLog(
+    insertRunLog(
+      s.id,
+      'skipped',
+      `Held: ${reason} — will send after unlock`,
+      undefined,
+      scheduledTime,
+      retryAttempt,
+      retryOf
+    ),
+    s
+  )
+  if (onExecutedCallback) onExecutedCallback(entry)
+  log.info(`Schedule ${s.id} held for user session: ${reason}`)
+  scheduleSessionRecheck('held send')
+}
+
+async function ensureAutomaticSessionReady(
+  s: Schedule,
+  retryAttempt: number,
+  retryOf: string | undefined,
+  scheduledTime: string
+): Promise<boolean> {
+  const reason = await getUserSessionHoldReason()
+  if (!reason) {
+    clearPendingSessionWait(s.id)
+    return true
+  }
+  holdForUserSession(s, retryAttempt, retryOf, scheduledTime, reason)
+  return false
+}
+
+async function waitBeforeAutomaticSend(s: Schedule): Promise<void> {
+  if (onBeforeAutomationCallback) {
+    try {
+      onBeforeAutomationCallback({
+        scheduleId: s.id,
+        recipientType: s.recipientType,
+        recipient: recipientForSchedule(s),
+        messagePreview: s.message.substring(0, 80),
+        startsInMs: BEFORE_AUTOMATION_WARNING_MS
+      })
+    } catch (err) {
+      log.warn(`Before-automation callback failed for ${s.id}`, err)
+    }
+  }
+  await sleep(BEFORE_AUTOMATION_WARNING_MS)
+}
+
 /**
  * Schedule a recheck in `callPollIntervalMs` ms.
  * `firstDetectedAt` is preserved across rechecks so we can enforce the
@@ -472,12 +653,23 @@ async function performSend(
   retryAttempt: number,
   retryOf: string | undefined,
   scheduledTime: string,
-  keepOpen: boolean
-): Promise<RunLog> {
+  keepOpen: boolean,
+  warnBeforeAutomation: boolean
+): Promise<RunLog | null> {
   const recipientLabel = s.recipientType === 'group'
     ? `group:"${s.groupName}"`
     : s.phoneNumber.slice(0, -4).replace(/./g, '*') + s.phoneNumber.slice(-4)
   log.info(`Executing ${s.id} (${s.scheduleType}) → ${recipientLabel}${s.dryRun ? ' [dry-run]' : ''}${retryAttempt > 0 ? ` [retry ${retryAttempt}]` : ''}${keepOpen ? ' [keep-open]' : ''}`)
+
+  if (warnBeforeAutomation) {
+    if (!(await ensureAutomaticSessionReady(s, retryAttempt, retryOf, scheduledTime))) {
+      return null
+    }
+    await waitBeforeAutomaticSend(s)
+    if (!(await ensureAutomaticSessionReady(s, retryAttempt, retryOf, scheduledTime))) {
+      return null
+    }
+  }
 
   const startTime = Date.now()
   const result = s.recipientType === 'group'
@@ -529,7 +721,7 @@ async function executeQueuedSend(item: QueueItem, keepOpen: boolean): Promise<vo
     return
   }
   try {
-    await performSend(s, item.retryAttempt, item.retryOf, item.scheduledTime, keepOpen)
+    await performSend(s, item.retryAttempt, item.retryOf, item.scheduledTime, keepOpen, true)
   } catch (err) {
     log.error(`performSend threw for ${s.id}`, err)
     const errMsg = err instanceof Error ? err.message : String(err)
@@ -586,21 +778,11 @@ async function executeJob(
       return entry
     }
 
-    // Check if screen is locked before attempting to send
-    let screenLocked = false
-    try {
-      const result = await runAppleScript('tell application "System Events" to return running of screen saver preferences', 5000)
-      screenLocked = result.trim() === 'true'
-    } catch (err) {
-      log.warn(`Gate: screen-lock probe failed for ${scheduleId} — proceeding`, err)
-    }
-    log.info(`Gate: ${scheduleId} screenLocked=${screenLocked}`)
-
-    if (screenLocked) {
-      const entry = enrichRunLog(insertRunLog(scheduleId, 'skipped', 'Screen locked: cannot send via AppleScript', undefined, scheduledTime, retryAttempt, retryOf), s)
-      updateLastFiredAt(scheduleId)
-      if (onExecutedCallback) onExecutedCallback(entry)
-      return entry
+    // Automatic sends must wait for an unlocked, active macOS session. Manual
+    // Test Send skips this hold because the user is actively requesting it.
+    if (!bypassQueue) {
+      const ready = await ensureAutomaticSessionReady(s, retryAttempt, retryOf, scheduledTime)
+      if (!ready) return null
     }
 
     // Call-aware hold: if the user is on a call, postpone and re-check later.
@@ -714,7 +896,7 @@ async function executeJob(
     log.info(
       `Routing ${scheduleId} via direct send (${bypassQueue ? 'bypassQueue from testSendSchedule' : 'queue disabled'})`
     )
-    return await performSend(s, retryAttempt, retryOf, scheduledTime, false)
+    return await performSend(s, retryAttempt, retryOf, scheduledTime, false, !bypassQueue)
   } finally {
     executing.delete(scheduleId)
   }
@@ -728,6 +910,7 @@ async function executeJob(
 export async function testSendSchedule(scheduleId: string): Promise<RunLog | null> {
   clearPendingRetry(scheduleId)
   clearPendingCallWait(scheduleId)
+  clearPendingSessionWait(scheduleId)
   // Bypass the call-in-progress check AND the send queue — the user clicked
   // Send and is awaiting synchronous feedback. The queue is for serializing
   // scheduled cron triggers; routing a manual test through it returns null
@@ -779,6 +962,8 @@ export function shutdownScheduler(): void {
     clearTimeout(wait.timeout)
   }
   pendingCallWaits.clear()
+  pendingSessionWaits.clear()
+  clearSessionRecheck()
 
   clearQueue()
 }

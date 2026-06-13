@@ -57,10 +57,22 @@ export interface CallStateProbe extends CallState {
   matchedWindowTitle?: string
 }
 
+export interface UserSessionProbe {
+  ready: boolean
+  reason?: string
+  frontApp: string
+  screenSaverRunning: boolean
+}
+
 interface ProbeResult {
   frontApp: string
   runningCallApps: string[]
   matchedWindow: { app: string; title: string } | null
+}
+
+interface UserSessionProbeResult {
+  frontApp: string
+  screenSaverRunning: boolean
 }
 
 /**
@@ -139,6 +151,19 @@ export function parseProbeOutput(raw: string): ProbeResult {
   return { frontApp, runningCallApps, matchedWindow }
 }
 
+/** Parse "<frontApp>|<screenSaverRunning>" from the user-session readiness probe. */
+export function parseUserSessionProbeOutput(raw: string): UserSessionProbeResult {
+  const parts = raw.split('|')
+  const frontApp = (parts[0] || '').trim()
+  const screenSaverRunning = (parts[1] || '').trim().toLowerCase() === 'true'
+  return { frontApp, screenSaverRunning }
+}
+
+function isLoginWindowFrontmost(frontApp: string): boolean {
+  const normalized = frontApp.trim().toLowerCase()
+  return normalized === '' || normalized === 'loginwindow' || normalized === 'securityagent'
+}
+
 /** `pmset -g assertions` reports an active audio-input count when a call/recording is live. */
 export function parsePmsetAudioInUse(output: string): boolean {
   // Common forms across macOS versions:
@@ -172,6 +197,63 @@ export async function isSystemInCall(): Promise<CallState> {
     inCall: probe.inCall,
     reason: probe.reason,
     detectedApp: probe.detectedApp
+  }
+}
+
+/**
+ * Check whether the interactive user session is safe for UI automation.
+ *
+ * Fail-closed policy: if we cannot confirm an unlocked active session, the
+ * scheduler should hold automatic sends instead of risking global keystrokes.
+ */
+export async function probeUserSessionState(): Promise<UserSessionProbe> {
+  try {
+    const raw = await runAppleScript(`
+      set frontAppName to ""
+      set saverRunning to false
+      tell application "System Events"
+        try
+          set frontAppName to name of first application process whose frontmost is true
+        end try
+        try
+          set saverRunning to running of screen saver preferences
+        end try
+      end tell
+      return frontAppName & "|" & saverRunning
+    `, 5000)
+    const probe = parseUserSessionProbeOutput(raw)
+
+    if (probe.screenSaverRunning) {
+      return {
+        ready: false,
+        reason: 'screen saver or lock screen is active',
+        frontApp: probe.frontApp,
+        screenSaverRunning: true
+      }
+    }
+
+    if (isLoginWindowFrontmost(probe.frontApp)) {
+      return {
+        ready: false,
+        reason: probe.frontApp ? `${probe.frontApp} is frontmost` : 'no active frontmost app',
+        frontApp: probe.frontApp,
+        screenSaverRunning: false
+      }
+    }
+
+    return {
+      ready: true,
+      frontApp: probe.frontApp,
+      screenSaverRunning: false
+    }
+  } catch (err) {
+    log.warn('user-session probe failed — holding automation', err)
+    return {
+      ready: false,
+      reason: err instanceof Error ? err.message : 'Unable to confirm active user session',
+      frontApp: '',
+      screenSaverRunning: false
+    }
   }
 }
 

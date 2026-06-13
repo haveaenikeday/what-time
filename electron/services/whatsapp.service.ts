@@ -14,23 +14,35 @@ function escapeForAppleScript(str: string): string {
   return str.replace(/\\/g, '\\\\').replace(/"/g, '\\"')
 }
 
+function sendError(message: string, isDryRun: boolean): SendResult {
+  return { success: false, error: message, dryRun: isDryRun }
+}
+
+async function getFrontmostApp(): Promise<string> {
+  return (await runAppleScript(
+    'tell application "System Events" to return name of first application process whose frontmost is true',
+    5000
+  )).trim()
+}
+
 /**
  * Ensure WhatsApp Desktop is running. Launches it if not.
  * Returns a SendResult error if it cannot be started, or null on success.
  */
 async function ensureWhatsAppRunning(appName: string, isDryRun: boolean): Promise<SendResult | null> {
+  const escapedAppName = escapeForAppleScript(appName)
+  const checkScript = `tell application "System Events" to (name of processes) contains "${escapedAppName}"`
   try {
-    const checkScript = `tell application "System Events" to (name of processes) contains "${appName}"`
     const running = await runAppleScript(checkScript)
     if (running.trim() === 'false') {
       log.info(`${appName} not running — launching`)
       try {
         await runCommand('open', ['-a', appName])
       } catch {
-        return { success: false, error: `${appName} is not installed or could not be launched`, dryRun: isDryRun }
+        return sendError(`${appName} is not installed or could not be launched`, isDryRun)
       }
       let launched = false
-      for (let i = 0; i < 3; i++) {
+      for (let i = 0; i < 5; i++) {
         await sleep(1000)
         try {
           const recheck = await runAppleScript(checkScript)
@@ -38,16 +50,77 @@ async function ensureWhatsAppRunning(appName: string, isDryRun: boolean): Promis
         } catch { /* continue checking */ }
       }
       if (!launched) {
-        return { success: false, error: `${appName} failed to start after 3 seconds`, dryRun: isDryRun }
+        return sendError(`${appName} failed to start after 5 seconds`, isDryRun)
       }
       log.info(`${appName} launched successfully`)
     } else {
       log.info(`${appName} already running`)
     }
   } catch (err) {
-    log.warn(`ensureWhatsAppRunning probe failed for ${appName} — proceeding anyway`, err)
+    const errMsg = err instanceof Error ? err.message : String(err)
+    log.warn(`ensureWhatsAppRunning probe failed for ${appName} — failing closed`, err)
+    return sendError(`Could not confirm ${appName} is running: ${errMsg}`, isDryRun)
   }
   return null
+}
+
+async function activateAndConfirmWhatsApp(
+  appName: string,
+  isDryRun: boolean,
+  context: string
+): Promise<SendResult | null> {
+  const escapedAppName = escapeForAppleScript(appName)
+
+  try {
+    await runAppleScript(`tell application "${escapedAppName}" to activate`, 5000)
+  } catch (err) {
+    const errMsg = err instanceof Error ? err.message : String(err)
+    return sendError(`Could not activate ${appName} before ${context}: ${errMsg}`, isDryRun)
+  }
+
+  let lastFrontApp = ''
+  for (let i = 0; i < 5; i++) {
+    await sleep(300)
+    try {
+      lastFrontApp = await getFrontmostApp()
+      if (lastFrontApp === appName) return null
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err)
+      return sendError(`Could not confirm frontmost app before ${context}: ${errMsg}`, isDryRun)
+    }
+  }
+
+  return sendError(
+    `${appName} did not become frontmost before ${context}${lastFrontApp ? ` (frontmost: ${lastFrontApp})` : ''}`,
+    isDryRun
+  )
+}
+
+async function runWhatsAppAutomationScript(
+  appName: string,
+  isDryRun: boolean,
+  context: string,
+  automationScript: string,
+  timeoutMs = 10000
+): Promise<SendResult | null> {
+  const focusErr = await activateAndConfirmWhatsApp(appName, isDryRun, context)
+  if (focusErr) return focusErr
+
+  const escapedAppName = escapeForAppleScript(appName)
+  const escapedContext = escapeForAppleScript(context)
+  try {
+    await runAppleScript(`
+      tell application "System Events"
+        if not (exists process "${escapedAppName}") then error "${escapedAppName} is not running before ${escapedContext}"
+        if name of first application process whose frontmost is true is not "${escapedAppName}" then error "${escapedAppName} is not frontmost before ${escapedContext}"
+      end tell
+      ${automationScript}
+    `, timeoutMs)
+    return null
+  } catch (err) {
+    const errMsg = err instanceof Error ? err.message : String(err)
+    return sendError(errMsg, isDryRun)
+  }
 }
 
 /**
@@ -68,6 +141,7 @@ export async function sendWhatsAppMessage(
   const isDryRun = opts.dryRun || settings.globalDryRun
   const keepOpen = opts.keepOpen === true
   const appName = settings.whatsappApp.replace(/['"\\;\n\r]/g, '')
+  const escapedAppName = escapeForAppleScript(appName)
 
   log.info(`sendWhatsAppMessage start`, { appName, isDryRun, keepOpen, sendDelayMs: settings.sendDelayMs })
 
@@ -89,19 +163,20 @@ export async function sendWhatsAppMessage(
       return { success: true, dryRun: true }
     }
 
-    // Activate WhatsApp and press Enter to send; optionally close the window after.
-    const closeLine = keepOpen ? '' : 'delay 1.0\n          keystroke "w" using command down'
-    const sendScript = `
-      tell application "${appName}" to activate
-      delay 0.5
+    // Press Enter to send only after WhatsApp is confirmed frontmost.
+    const closeLine = keepOpen ? '' : `
+          delay 1.0
+          if name of first application process whose frontmost is true is not "${escapedAppName}" then error "${escapedAppName} is not frontmost before closing chat"
+          keystroke "w" using command down`
+    const sendErr = await runWhatsAppAutomationScript(appName, isDryRun, 'contact send', `
       tell application "System Events"
-        tell process "${appName}"
+        tell process "${escapedAppName}"
           keystroke return
           ${closeLine}
         end tell
       end tell
-    `
-    await runAppleScript(sendScript)
+    `)
+    if (sendErr) return sendErr
     log.info(`contact send: keystroke return executed${keepOpen ? ' (keep-open)' : ' + Cmd+W'}`)
 
     return { success: true, dryRun: false }
@@ -136,6 +211,7 @@ export async function sendWhatsAppGroupMessage(
   const isDryRun = opts.dryRun || settings.globalDryRun
   const keepOpen = opts.keepOpen === true
   const appName = settings.whatsappApp.replace(/['"\\;\n\r]/g, '')
+  const escapedAppName = escapeForAppleScript(appName)
   const escapedGroupName = escapeForAppleScript(groupName)
   const escapedMessage = escapeForAppleScript(message)
 
@@ -154,48 +230,49 @@ export async function sendWhatsAppGroupMessage(
 
     // Phase 1: activate + reset (Escape x2 dismisses any open dialog/search).
     log.info(`[phase 1] activate + Escape x2 for "${groupName}"`)
-    await runAppleScript(`
-      tell application "${appName}" to activate
-      delay 0.8
+    const phase1Err = await runWhatsAppAutomationScript(appName, isDryRun, 'group phase 1 reset', `
       tell application "System Events"
-        tell process "${appName}"
+        tell process "${escapedAppName}"
           key code 53
           delay 0.3
           key code 53
         end tell
       end tell
     `)
+    if (phase1Err) return phase1Err
     await sleep(300)
 
     // Phase 2: Cmd+F opens WhatsApp's search bar.
     log.info(`[phase 2] Cmd+F`)
-    await runAppleScript(`
+    const phase2Err = await runWhatsAppAutomationScript(appName, isDryRun, 'group phase 2 search', `
       tell application "System Events"
-        tell process "${appName}"
+        tell process "${escapedAppName}"
           keystroke "f" using command down
         end tell
       end tell
     `)
+    if (phase2Err) return phase2Err
     await sleep(400)
 
     // Phase 3: type the group name; wait for results to populate.
     log.info(`[phase 3] type "${escapedGroupName}"`)
-    await runAppleScript(`
+    const phase3Err = await runWhatsAppAutomationScript(appName, isDryRun, 'group phase 3 type group name', `
       tell application "System Events"
-        tell process "${appName}"
+        tell process "${escapedAppName}"
           keystroke "${escapedGroupName}"
         end tell
       end tell
     `)
+    if (phase3Err) return phase3Err
     const waitMs = Math.max(settings.sendDelayMs, 2000)
     log.info(`[phase 3] waiting ${waitMs}ms for results`)
     await sleep(waitMs)
 
     // Phase 4: Down x2 + Enter selects the first result and opens the chat.
     log.info(`[phase 4] Down x2 + Enter`)
-    await runAppleScript(`
+    const phase4Err = await runWhatsAppAutomationScript(appName, isDryRun, 'group phase 4 open chat', `
       tell application "System Events"
-        tell process "${appName}"
+        tell process "${escapedAppName}"
           key code 125
           delay 0.3
           key code 125
@@ -204,19 +281,21 @@ export async function sendWhatsAppGroupMessage(
         end tell
       end tell
     `)
+    if (phase4Err) return phase4Err
     await sleep(1500)
 
     // Phase 5: paste the message via clipboard (Cmd+V — works with emoji/unicode).
     log.info(`[phase 5] paste message (length=${message.length})`)
-    await runAppleScript(`
+    const phase5Err = await runWhatsAppAutomationScript(appName, isDryRun, 'group phase 5 paste message', `
       set the clipboard to "${escapedMessage}"
       delay 0.3
       tell application "System Events"
-        tell process "${appName}"
+        tell process "${escapedAppName}"
           keystroke "v" using command down
         end tell
       end tell
     `)
+    if (phase5Err) return phase5Err
     await sleep(500)
 
     if (isDryRun) {
@@ -226,15 +305,19 @@ export async function sendWhatsAppGroupMessage(
 
     // Phase 6: Enter sends; optional Cmd+W closes the window unless keepOpen.
     log.info(`[phase 6] sending${keepOpen ? ' (keep-open)' : ''}`)
-    const closeLine = keepOpen ? '' : 'delay 1.0\n          keystroke "w" using command down'
-    await runAppleScript(`
+    const closeLine = keepOpen ? '' : `
+          delay 1.0
+          if name of first application process whose frontmost is true is not "${escapedAppName}" then error "${escapedAppName} is not frontmost before closing chat"
+          keystroke "w" using command down`
+    const phase6Err = await runWhatsAppAutomationScript(appName, isDryRun, 'group phase 6 send', `
       tell application "System Events"
-        tell process "${appName}"
+        tell process "${escapedAppName}"
           keystroke return
           ${closeLine}
         end tell
       end tell
     `)
+    if (phase6Err) return phase6Err
     log.info(`Group send → "${groupName}": sent successfully`)
     return { success: true, dryRun: false }
   } catch (error) {

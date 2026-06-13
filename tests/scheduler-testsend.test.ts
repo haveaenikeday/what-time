@@ -176,6 +176,11 @@ describe('testSendSchedule — behavior', () => {
 
     vi.doMock('../electron/utils/system-state', () => ({
       isSystemInCall: vi.fn().mockResolvedValue({ inCall: false }),
+      probeUserSessionState: vi.fn().mockResolvedValue({
+        ready: true,
+        frontApp: 'Finder',
+        screenSaverRunning: false
+      }),
       probeCallState: vi.fn().mockResolvedValue({
         inCall: false,
         frontApp: 'Finder',
@@ -271,6 +276,11 @@ describe('testSendSchedule — behavior', () => {
     }))
     vi.doMock('../electron/utils/system-state', () => ({
       isSystemInCall: vi.fn().mockResolvedValue({ inCall: false }),
+      probeUserSessionState: vi.fn().mockResolvedValue({
+        ready: true,
+        frontApp: 'Finder',
+        screenSaverRunning: false
+      }),
       probeCallState: vi.fn()
     }))
     vi.doMock('../electron/services/sendQueue', () => ({

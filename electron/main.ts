@@ -1,7 +1,16 @@
 import { app, BrowserWindow, shell, powerMonitor, Notification, Tray, Menu, nativeImage } from 'electron'
 import { join } from 'path'
 import { initDb, closeDb, getSettings, schedulePruneOldLogs } from './services/db.service'
-import { initScheduler, setOnExecutedCallback, shutdownScheduler, resyncAfterWake } from './services/scheduler.service'
+import {
+  checkAndResumeHeldSessionSends,
+  initScheduler,
+  markUserSessionBlocked,
+  markUserSessionReady,
+  setOnBeforeAutomationCallback,
+  setOnExecutedCallback,
+  shutdownScheduler,
+  resyncAfterWake
+} from './services/scheduler.service'
 import { registerAllHandlers } from './ipc/handlers'
 import { createLogger } from './utils/logger'
 import type { RunLog } from '../shared/types'
@@ -165,6 +174,15 @@ app.whenReady().then(() => {
   app.setLoginItemSettings({ openAtLogin: settings.openAtLogin, openAsHidden: true })
   log.info(`open-at-login: ${settings.openAtLogin}`)
 
+  setOnBeforeAutomationCallback((info) => {
+    if (!Notification.isSupported()) return
+    const seconds = Math.ceil(info.startsInMs / 1000)
+    new Notification({
+      title: `WhatTime will send in ${seconds} seconds`,
+      body: `${info.recipient}: ${info.messagePreview || 'Scheduled WhatsApp message'}`
+    }).show()
+  })
+
   // Push execution events to renderer + show native notification
   setOnExecutedCallback((execLog: RunLog) => {
     if (mainWindow && !mainWindow.isDestroyed()) {
@@ -206,9 +224,40 @@ app.whenReady().then(() => {
   })
 
   // Re-sync scheduler after macOS sleep/wake to catch missed timers
+  powerMonitor.on('suspend', () => {
+    log.info('System suspending — holding automatic sends')
+    markUserSessionBlocked('System is suspending')
+  })
+
   powerMonitor.on('resume', () => {
     log.info('System resumed from sleep — resyncing scheduler')
+    markUserSessionBlocked('System resumed; waiting for unlocked active session')
     resyncAfterWake()
+    setTimeout(() => {
+      checkAndResumeHeldSessionSends('resume readiness probe').catch((err) => {
+        log.warn('Resume readiness probe failed', err)
+      })
+    }, 5_000)
+  })
+
+  powerMonitor.on('lock-screen', () => {
+    log.info('Screen locked — holding automatic sends')
+    markUserSessionBlocked('Screen is locked')
+  })
+
+  powerMonitor.on('unlock-screen', () => {
+    log.info('Screen unlocked — resuming held sends')
+    markUserSessionReady('screen unlock')
+  })
+
+  powerMonitor.on('user-did-resign-active', () => {
+    log.info('User session resigned active — holding automatic sends')
+    markUserSessionBlocked('User session is inactive')
+  })
+
+  powerMonitor.on('user-did-become-active', () => {
+    log.info('User session became active — resuming held sends')
+    markUserSessionReady('user session active')
   })
 
   log.info('[startup 5/5] Creating main window...')

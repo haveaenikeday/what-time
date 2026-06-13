@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { parseProbeOutput, parsePmsetAudioInUse } from '../electron/utils/system-state'
+import { parseProbeOutput, parsePmsetAudioInUse, parseUserSessionProbeOutput } from '../electron/utils/system-state'
 
 describe('parseProbeOutput', () => {
   it('parses all three segments when a window title matches', () => {
@@ -55,6 +55,71 @@ describe('parsePmsetAudioInUse', () => {
 
   it('false when no audio fields present', () => {
     expect(parsePmsetAudioInUse('cnt_user_active_assertion 0\nsome other data')).toBe(false)
+  })
+})
+
+describe('parseUserSessionProbeOutput', () => {
+  it('parses frontmost app and screen saver state', () => {
+    expect(parseUserSessionProbeOutput('Finder|false')).toEqual({
+      frontApp: 'Finder',
+      screenSaverRunning: false
+    })
+    expect(parseUserSessionProbeOutput('loginwindow|true')).toEqual({
+      frontApp: 'loginwindow',
+      screenSaverRunning: true
+    })
+  })
+})
+
+describe('probeUserSessionState', () => {
+  beforeEach(() => {
+    vi.resetModules()
+  })
+
+  it('returns ready=true for a normal active desktop session', async () => {
+    vi.doMock('../electron/utils/applescript', () => ({
+      runAppleScript: vi.fn().mockResolvedValue('Finder|false'),
+      runCommand: vi.fn()
+    }))
+    const { probeUserSessionState } = await import('../electron/utils/system-state')
+    await expect(probeUserSessionState()).resolves.toEqual({
+      ready: true,
+      frontApp: 'Finder',
+      screenSaverRunning: false
+    })
+  })
+
+  it('returns ready=false when the login window is frontmost', async () => {
+    vi.doMock('../electron/utils/applescript', () => ({
+      runAppleScript: vi.fn().mockResolvedValue('loginwindow|false'),
+      runCommand: vi.fn()
+    }))
+    const { probeUserSessionState } = await import('../electron/utils/system-state')
+    const state = await probeUserSessionState()
+    expect(state.ready).toBe(false)
+    expect(state.reason).toContain('loginwindow')
+  })
+
+  it('returns ready=false when the screen saver or lock screen is active', async () => {
+    vi.doMock('../electron/utils/applescript', () => ({
+      runAppleScript: vi.fn().mockResolvedValue('Finder|true'),
+      runCommand: vi.fn()
+    }))
+    const { probeUserSessionState } = await import('../electron/utils/system-state')
+    const state = await probeUserSessionState()
+    expect(state.ready).toBe(false)
+    expect(state.reason).toContain('screen saver')
+  })
+
+  it('fail-closed: AppleScript throws -> ready=false', async () => {
+    vi.doMock('../electron/utils/applescript', () => ({
+      runAppleScript: vi.fn().mockRejectedValue(new Error('osascript boom')),
+      runCommand: vi.fn()
+    }))
+    const { probeUserSessionState } = await import('../electron/utils/system-state')
+    const state = await probeUserSessionState()
+    expect(state.ready).toBe(false)
+    expect(state.reason).toContain('osascript boom')
   })
 })
 

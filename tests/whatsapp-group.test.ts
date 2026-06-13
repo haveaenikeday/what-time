@@ -121,8 +121,13 @@ describe('sendWhatsAppGroupMessage', () => {
   })
 
   function mockDeps(appleScriptResult = '', commandResult = '') {
+    const runAppleScript = vi.fn().mockImplementation((script: string) => {
+      if (script.includes('(name of processes) contains "WhatsApp"')) return Promise.resolve('true')
+      if (script.includes('first application process whose frontmost is true')) return Promise.resolve('WhatsApp')
+      return Promise.resolve(appleScriptResult)
+    })
     vi.doMock('../electron/utils/applescript', () => ({
-      runAppleScript: vi.fn().mockResolvedValue(appleScriptResult),
+      runAppleScript,
       runCommand: vi.fn().mockResolvedValue(commandResult)
     }))
     vi.doMock('../electron/services/db.service', () => ({
@@ -170,8 +175,13 @@ describe('sendWhatsAppGroupMessage', () => {
   })
 
   it('globalDryRun setting overrides dryRun=false', async () => {
+    const runAppleScript = vi.fn().mockImplementation((script: string) => {
+      if (script.includes('(name of processes) contains "WhatsApp"')) return Promise.resolve('true')
+      if (script.includes('first application process whose frontmost is true')) return Promise.resolve('WhatsApp')
+      return Promise.resolve('')
+    })
     vi.doMock('../electron/utils/applescript', () => ({
-      runAppleScript: vi.fn().mockResolvedValue(''),
+      runAppleScript,
       runCommand: vi.fn().mockResolvedValue('')
     }))
     vi.doMock('../electron/services/db.service', () => ({
@@ -184,5 +194,57 @@ describe('sendWhatsAppGroupMessage', () => {
     const { sendWhatsAppGroupMessage } = await import('../electron/services/whatsapp.service')
     const result = await sendWhatsAppGroupMessage('Test Group', 'Hello!', { dryRun: false })
     expect(result).toEqual({ success: true, dryRun: true })
+  })
+
+  it('does not run group keystrokes when WhatsApp cannot become frontmost', async () => {
+    const runAppleScript = vi.fn().mockImplementation((script: string) => {
+      if (script.includes('(name of processes) contains "WhatsApp"')) return Promise.resolve('true')
+      if (script.includes('first application process whose frontmost is true')) return Promise.resolve('Finder')
+      return Promise.resolve('')
+    })
+    vi.doMock('../electron/utils/applescript', () => ({
+      runAppleScript,
+      runCommand: vi.fn().mockResolvedValue('')
+    }))
+    vi.doMock('../electron/services/db.service', () => ({
+      getSettings: vi.fn().mockReturnValue({
+        globalDryRun: false,
+        whatsappApp: 'WhatsApp',
+        sendDelayMs: 100
+      })
+    }))
+
+    const { sendWhatsAppGroupMessage } = await import('../electron/services/whatsapp.service')
+    const result = await sendWhatsAppGroupMessage('Test Group', 'Hello!', { dryRun: false })
+
+    expect(result.success).toBe(false)
+    expect(result.error).toContain('did not become frontmost')
+    expect(runAppleScript.mock.calls.some(([script]) => String(script).includes('key code 53'))).toBe(false)
+  })
+
+  it('does not press Enter for contact sends when WhatsApp cannot become frontmost', async () => {
+    const runAppleScript = vi.fn().mockImplementation((script: string) => {
+      if (script.includes('(name of processes) contains "WhatsApp"')) return Promise.resolve('true')
+      if (script.includes('first application process whose frontmost is true')) return Promise.resolve('Finder')
+      return Promise.resolve('')
+    })
+    vi.doMock('../electron/utils/applescript', () => ({
+      runAppleScript,
+      runCommand: vi.fn().mockResolvedValue('')
+    }))
+    vi.doMock('../electron/services/db.service', () => ({
+      getSettings: vi.fn().mockReturnValue({
+        globalDryRun: false,
+        whatsappApp: 'WhatsApp',
+        sendDelayMs: 100
+      })
+    }))
+
+    const { sendWhatsAppMessage } = await import('../electron/services/whatsapp.service')
+    const result = await sendWhatsAppMessage('+1234567890', 'Hello!', { dryRun: false })
+
+    expect(result.success).toBe(false)
+    expect(result.error).toContain('did not become frontmost')
+    expect(runAppleScript.mock.calls.some(([script]) => String(script).includes('keystroke return'))).toBe(false)
   })
 })
